@@ -1,0 +1,7 @@
+services:
+  umabot:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

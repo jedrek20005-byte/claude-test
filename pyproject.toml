@@ -1,0 +1,23 @@
+[project]
+name = "umabot"
+version = "1.0.0"
+description = "Discord bot that posts a daily SFW Umamusume picture from several image boards"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "discord.py>=2.4,<3",
+    "aiohttp>=3.9,<4",
+    "python-dotenv>=1.0",
+    "tzdata",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[tool.setuptools]
+packages = ["umabot", "umabot.sources"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
