@@ -41,8 +41,9 @@ jobs:
       - name: Post the daily picture
         env:
           ACTION: ${{ inputs.action }}
-          # Required: Settings → Secrets and variables → Actions → New repository secret
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # Required: Settings → Secrets and variables → Actions → New repository secret,
+          # named WEBHOOK (easy to type on a phone) or DISCORD_WEBHOOK_URL.
+          DISCORD_WEBHOOK_URL: ${{ secrets.WEBHOOK || secrets.DISCORD_WEBHOOK_URL }}
           # Optional settings: add them as repository *variables* to change them.
           POST_TIME: ${{ vars.POST_TIME || '12:00' }}
           TIMEZONE: ${{ vars.TIMEZONE || 'UTC' }}
@@ -64,7 +65,7 @@ jobs:
           STATE_FILE: state/history.json
         run: |
           if [ -z "$DISCORD_WEBHOOK_URL" ] && [ "$ACTION" != "check sources" ]; then
-            echo "::warning::Add the DISCORD_WEBHOOK_URL secret to start posting (see README)."
+            echo "::warning::Add a repository secret named WEBHOOK with your Discord webhook link to start posting."
             # Don't fail (and send an email) every hour before setup is finished.
             [ "$GITHUB_EVENT_NAME" = "schedule" ] && exit 0 || exit 1
           fi

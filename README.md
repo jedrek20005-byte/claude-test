@@ -29,7 +29,7 @@ There are two ways to run it:
 The workflow in [`.github/workflows/daily-post.yml`](.github/workflows/daily-post.yml) runs every hour on GitHub's servers. It posts once per day, as soon as `POST_TIME` has passed. Every step below works in the Discord app and a phone browser.
 
 1. **Create a webhook in the Discord app:** open your server → tap the server name → **Settings** → **Integrations** → **Webhooks** → **New Webhook**. Pick the channel, give it a name and picture (e.g. "Umamusume Daily"), then tap **Copy Webhook URL**.
-2. **Give the URL to GitHub:** in your browser, open the repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**. Name it `DISCORD_WEBHOOK_URL` and paste the URL as the value. (On a phone you may need to switch the browser to "desktop site" to see **Settings**.)
+2. **Give the URL to GitHub:** in your browser, open the repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**. Name it `WEBHOOK` (or `DISCORD_WEBHOOK_URL`), with no spaces, and paste the URL as the value. (On a phone you may need to switch the browser to "desktop site" to see **Settings**.)
 3. **Test it:** open the **Actions** tab → **Daily Umamusume picture** → **Run workflow**, then pick one of these:
    - `post now` posts today's picture right away.
    - `check sources` tests the image sites. Open the run's log to see the results.
