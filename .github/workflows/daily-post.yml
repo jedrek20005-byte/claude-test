@@ -63,6 +63,11 @@ jobs:
           GELBOORU_API_KEY: ${{ secrets.GELBOORU_API_KEY }}
           STATE_FILE: state/history.json
         run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ] && [ "$ACTION" != "check sources" ]; then
+            echo "::warning::Add the DISCORD_WEBHOOK_URL secret to start posting (see README)."
+            # Don't fail (and send an email) every hour before setup is finished.
+            [ "$GITHUB_EVENT_NAME" = "schedule" ] && exit 0 || exit 1
+          fi
           case "$ACTION" in
             "post now")      python -m umabot post --now ;;
             "check sources") python -m umabot check ;;
