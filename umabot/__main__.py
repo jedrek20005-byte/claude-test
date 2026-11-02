@@ -18,10 +18,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("run", "check"),
+        choices=("run", "post", "check"),
         default="run",
-        help="'run' starts the bot (default); 'check' tests the image sources without Discord",
+        help="'run' starts the bot (default); 'post' sends the daily picture through a webhook "
+        "if it's time; 'check' tests the image sources without Discord",
     )
+    parser.add_argument("--now", action="store_true", help="with 'post': post right away, even if it isn't time yet")
     parser.add_argument("--env-file", default=".env", help="file to load settings from (default: .env)")
     args = parser.parse_args(argv)
 
@@ -37,6 +39,10 @@ def main(argv: list[str] | None = None) -> int:
         from .check import run_check
 
         return asyncio.run(run_check(config))
+    if args.command == "post":
+        from .webhook import run_post
+
+        return asyncio.run(run_post(config, now=args.now))
 
     from .bot import UmaBot
 

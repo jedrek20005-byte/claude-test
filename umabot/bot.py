@@ -16,14 +16,11 @@ from .filters import ContentFilter
 from .history import PostHistory
 from .models import Image
 from .picker import Picker
-from .posting import PreparedPost, make_session, prepare_post
+from .posting import DAILY_TITLE, RANDOM_TITLE, PreparedPost, make_session, prepare_post
 from .schedule import is_due, local_day, next_run_after, sleep_until, utcnow
 from .sources import build_sources, display_name
 
 log = logging.getLogger(__name__)
-
-DAILY_TITLE = "🐴 Umamusume of the Day"
-RANDOM_TITLE = "🐴 Random Umamusume"
 
 
 class UmaBot(discord.Client):

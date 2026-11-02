@@ -96,6 +96,7 @@ def _missing_credentials(source: str, env: Mapping[str, str]) -> str | None:
 class Config:
     discord_token: str
     channel_ids: tuple[int, ...]
+    webhook_urls: tuple[str, ...]
     guild_id: int | None
     post_time: time
     timezone: ZoneInfo
@@ -159,6 +160,7 @@ class Config:
         return cls(
             discord_token=token,
             channel_ids=channel_ids,
+            webhook_urls=tuple(_split(f"{get('DISCORD_WEBHOOK_URL', '')},{get('DISCORD_WEBHOOK_URLS', '')}")),
             guild_id=guild_id,
             post_time=_parse_time(get("POST_TIME") or "12:00"),
             timezone=_parse_timezone(get("TIMEZONE") or "UTC"),

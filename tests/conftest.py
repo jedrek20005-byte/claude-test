@@ -58,8 +58,10 @@ async def fake_api() -> AsyncIterator[Callable[..., FakeApi]]:
             return await handler(request)
 
         app = web.Application(middlewares=[record])
-        for path, handler in routes.items():
-            app.router.add_get(path, _as_async(handler))
+        for route, handler in routes.items():
+            # Keys are "/path" for GET, or "POST /path".
+            method, _, path = route.rpartition(" ")
+            app.router.add_route(method or "GET", path, _as_async(handler))
         server = TestServer(app)
         await server.start_server()
         servers.append(server)

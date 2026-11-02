@@ -1,0 +1,83 @@
+name: Daily Umamusume picture
+
+on:
+  schedule:
+    # Runs every hour; the bot itself only posts once POST_TIME has passed in
+    # TIMEZONE (daylight saving included) and only once per day. Hourly runs
+    # also retry automatically if every image site was down.
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "post if due = normal daily run · post now = post today's picture right away · check sources = test the image sites"
+        type: choice
+        default: post if due
+        options:
+          - post if due
+          - post now
+          - check sources
+
+permissions:
+  contents: write # to save the post history back to the repo
+
+concurrency:
+  group: daily-umamusume
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Post the daily picture
+        env:
+          ACTION: ${{ inputs.action }}
+          # Required: Settings → Secrets and variables → Actions → New repository secret
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # Optional settings: add them as repository *variables* to change them.
+          POST_TIME: ${{ vars.POST_TIME || '12:00' }}
+          TIMEZONE: ${{ vars.TIMEZONE || 'UTC' }}
+          DAILY_MESSAGE: ${{ vars.DAILY_MESSAGE }}
+          SOURCES: ${{ vars.SOURCES }}
+          EXTRA_BLACKLIST_TAGS: ${{ vars.EXTRA_BLACKLIST_TAGS }}
+          ALLOW_SENSITIVE: ${{ vars.ALLOW_SENSITIVE }}
+          MIN_SCORE: ${{ vars.MIN_SCORE || '0' }}
+          DANBOORU_TAGS: ${{ vars.DANBOORU_TAGS }}
+          SAFEBOORU_TAGS: ${{ vars.SAFEBOORU_TAGS }}
+          GELBOORU_TAGS: ${{ vars.GELBOORU_TAGS }}
+          KONACHAN_TAGS: ${{ vars.KONACHAN_TAGS }}
+          ZEROCHAN_TAGS: ${{ vars.ZEROCHAN_TAGS }}
+          ZEROCHAN_USERNAME: ${{ vars.ZEROCHAN_USERNAME }}
+          DANBOORU_LOGIN: ${{ secrets.DANBOORU_LOGIN }}
+          DANBOORU_API_KEY: ${{ secrets.DANBOORU_API_KEY }}
+          GELBOORU_USER_ID: ${{ secrets.GELBOORU_USER_ID }}
+          GELBOORU_API_KEY: ${{ secrets.GELBOORU_API_KEY }}
+          STATE_FILE: state/history.json
+        run: |
+          case "$ACTION" in
+            "post now")      python -m umabot post --now ;;
+            "check sources") python -m umabot check ;;
+            *)               python -m umabot post ;;
+          esac
+
+      # Remembers what was posted so pictures never repeat. The daily commit
+      # also keeps GitHub from pausing the schedule in a quiet repo.
+      - name: Save post history
+        run: |
+          [ -f state/history.json ] || exit 0
+          git add state/history.json
+          git diff --cached --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update Umamusume post history"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"

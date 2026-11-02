@@ -21,6 +21,8 @@ from .sources import display_name
 log = logging.getLogger(__name__)
 
 EMBED_COLOR = discord.Color(0x5FBF6E)
+DAILY_TITLE = "🐴 Umamusume of the Day"
+RANDOM_TITLE = "🐴 Random Umamusume"
 _DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=90)
 
 

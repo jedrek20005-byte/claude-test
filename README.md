@@ -19,6 +19,24 @@ Features:
 - **Doesn't miss a day.** If the bot was offline at post time, it posts when it starts. If every source fails, it retries later.
 - **Slash commands:** `/uma` posts a random picture on demand, and `/uma_status` shows the schedule (admins only).
 
+There are two ways to run it:
+
+- **[Easy way, no computer needed](#easy-way-no-computer-needed-github-actions)**: GitHub runs it for free once an hour and it posts through a Discord webhook. You can set it all up from a phone. There are no slash commands in this mode.
+- **[Full bot](#1-create-the-discord-bot)**: an always-on bot with `/uma` and `/uma_status`. It needs a computer or server that stays on.
+
+## Easy way, no computer needed (GitHub Actions)
+
+The workflow in [`.github/workflows/daily-post.yml`](.github/workflows/daily-post.yml) runs every hour on GitHub's servers. It posts once per day, as soon as `POST_TIME` has passed. Every step below works in the Discord app and a phone browser.
+
+1. **Create a webhook in the Discord app:** open your server → tap the server name → **Settings** → **Integrations** → **Webhooks** → **New Webhook**. Pick the channel, give it a name and picture (e.g. "Umamusume Daily"), then tap **Copy Webhook URL**.
+2. **Give the URL to GitHub:** in your browser, open the repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**. Name it `DISCORD_WEBHOOK_URL` and paste the URL as the value. (On a phone you may need to switch the browser to "desktop site" to see **Settings**.)
+3. **Test it:** open the **Actions** tab → **Daily Umamusume picture** → **Run workflow**, then pick one of these:
+   - `post now` posts today's picture right away.
+   - `check sources` tests the image sites. Open the run's log to see the results.
+4. **Optional:** change settings by adding repository **variables** (same page, **Variables** tab), e.g. `POST_TIME` = `09:00` and `TIMEZONE` = `Europe/Warsaw`. Any setting from the [configuration table](#configuration) works, except the Discord ones.
+
+After a successful post, the workflow commits the post history to `state/history.json`, so pictures never repeat. These daily commits also stop GitHub from pausing the schedule, which it does in repos with no activity for 60 days. GitHub can start scheduled runs a bit late, so the picture usually arrives within an hour after `POST_TIME`.
+
 ## 1. Create the Discord bot
 
 1. Go to <https://discord.com/developers/applications> → **New Application**.
@@ -94,8 +112,9 @@ Every setting goes in `.env` (see [`.env.example`](.env.example)):
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `DISCORD_TOKEN` | — | Bot token (**required**) |
-| `CHANNEL_IDS` | — | Channel ID(s) for the daily post, comma-separated (**required**) |
+| `DISCORD_TOKEN` | — | Bot token (**required** for the full bot) |
+| `CHANNEL_IDS` | — | Channel ID(s) for the daily post, comma-separated (**required** for the full bot) |
+| `DISCORD_WEBHOOK_URL` | — | Webhook URL(s) for `python -m umabot post`, comma-separated (**required** in webhook mode) |
 | `POST_TIME` | `12:00` | Time of the daily post (24-hour clock) |
 | `TIMEZONE` | `UTC` | [IANA time zone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones), e.g. `Europe/Warsaw` |
 | `CATCH_UP` | `true` | Post on startup if today's post was missed |
@@ -142,8 +161,9 @@ Project layout:
 
 ```
 umabot/
-  __main__.py     entry point (python -m umabot [run|check])
+  __main__.py     entry point (python -m umabot [run|post|check])
   bot.py          Discord client, daily scheduler, slash commands
+  webhook.py      `post` command: one daily post through a webhook (GitHub Actions)
   config.py       settings from .env, default tags and blacklist
   picker.py       picks a fresh, safe picture, falling back between sources
   filters.py      rating / blacklist / file-type filter
