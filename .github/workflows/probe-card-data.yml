@@ -43,34 +43,18 @@ jobs:
                   print(json.dumps(data, ensure_ascii=False)[:limit])
               return data
 
-          # 1. umapyoi.net public API
-          data = None
-          text = get("https://umapyoi.net/api/v1/support")
-          if text:
-              data = show_json(text)
-          if isinstance(data, list) and data:
-              first = data[0]
-              sid = first.get("support_id") or first.get("id")
-              for path in (f"/api/v1/support/{sid}", f"/api/v1/support/{sid}/effects"):
-                  t = get("https://umapyoi.net" + path)
-                  if t: show_json(t, 4000)
-
-          # 2. GameTora supports page (Next.js data)
-          html = get("https://gametora.com/umamusume/supports")
-          if html:
-              print("data urls:", sorted(set(re.findall(r'/data/umamusume/[\w./-]+', html)))[:20])
-              m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
-              if m:
-                  nd = json.loads(m.group(1))
-                  print("buildId:", nd.get("buildId"))
-                  props = nd.get("props", {}).get("pageProps", {})
-                  print("pageProps keys:", list(props)[:30])
-                  for k, v in props.items():
-                      if isinstance(v, list) and v:
-                          print(f"pageProps[{k!r}]: list of {len(v)}; first:", json.dumps(v[0], ensure_ascii=False)[:2500])
-
-          # 3. Umamusume wiki data modules
-          t = get("https://umamusu.wiki/api.php?action=query&list=allpages&apnamespace=828&apprefix=Game/Supports&aplimit=50&format=json")
-          if t: show_json(t, 3000)
-          t = get("https://umamusu.wiki/Module:Game/Supports/Data?action=raw")
-          if t: print(t[:3000])
+          # Round 2: how the wiki reads support card effects, and where its game data lives.
+          for page in ("Module:Game/Supports/Data/Leveled", "Module:Game/Supports/Data/Unique", "Module:Game"):
+              t = get(f"https://umamusu.wiki/{page}?action=raw")
+              if t: print(t[:6000])
+          t = get("https://gitlab.com/api/v4/groups/umamusume-wiki/projects?per_page=50&include_subgroups=true")
+          if t:
+              try:
+                  for proj in json.loads(t):
+                      print("-", proj.get("path_with_namespace"), "|", (proj.get("description") or "")[:150], "|", proj.get("web_url"))
+              except Exception as e:
+                  print("bad json", e, t[:300])
+          for api in ("https://umamusu.wiki/w/api.php?action=query&meta=siteinfo&format=json",
+                      "https://umamusu.wiki/api.php?action=query&meta=siteinfo&format=json"):
+              t = get(api)
+              if t: print(t[:800])
