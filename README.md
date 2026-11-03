@@ -50,6 +50,10 @@ After a successful post, the workflow commits the post history to `state/history
 | `/uma_time time:09:00 timezone:Europe/Warsaw` | Manage Server | what time to post (for hourly posts, the minute); the time zone is picked from a list |
 | `/uma_off` | Manage Server | pauses scheduled pictures (`/uma_here` turns them back on) |
 | `/uma_status` | Manage Server | shows the channel, schedule, last post and last problem |
+| `/uma_cards` | everyone | private link to your card box: tap the support cards you own and pick their limit break |
+| `/uma_deck goal:Most fans` | everyone | builds your best 5-card deck from your cards (goals: **Most fans**, **Race bonus**) |
+
+**Deck builder.** `/uma_deck` adds up each card's Fan Bonus and Race Bonus at the max level for its limit break. It picks one card per character, as the game requires, and keeps slot 6 free for a borrowed friend card. The card data (`card-data/support-cards.json`) is rebuilt every Monday from the [Umamusume Wiki](https://umamusu.wiki), which reads the game's own master data. The *Update support card data* workflow can also be run by hand after a new banner.
 
 Scheduled pictures come from the app itself, within 5 minutes of each post time. Pictures don't repeat: the post history is kept in Cloudflare KV. If posting fails, the Worker tries again 30 minutes later.
 

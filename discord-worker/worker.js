@@ -89,6 +89,24 @@ const COMMANDS = [
   },
   { name: "uma_off", description: "Stop posting scheduled pictures", type: 1, ...ADMIN_ONLY },
   { name: "uma_status", description: "Show the scheduled picture settings", type: 1, ...ADMIN_ONLY },
+  { name: "uma_cards", description: "Pick the support cards you own (for /uma_deck)", type: 1 },
+  {
+    name: "uma_deck",
+    description: "Build your best support card deck from the cards you own",
+    type: 1,
+    options: [
+      {
+        type: 3,
+        name: "goal",
+        description: "What the deck should be best at",
+        required: false,
+        choices: [
+          { name: "Most fans", value: "fans" },
+          { name: "Race bonus", value: "race" },
+        ],
+      },
+    ],
+  },
 ];
 
 // Same list as DEFAULT_BLACKLIST in umabot/config.py; * is a wildcard.
@@ -114,6 +132,12 @@ export default {
     if (request.method === "GET" && url.pathname === "/register") {
       return registerPage(env);
     }
+    if (request.method === "GET" && url.pathname === "/cards") {
+      return cardsPage(env, url);
+    }
+    if (url.pathname === "/cards/mine") {
+      return myCardsApi(request, env, url);
+    }
     if (request.method === "GET") {
       return statusPage(env);
     }
@@ -135,7 +159,7 @@ export default {
     }
     const handler = interaction.type === 2 && COMMAND_HANDLERS[interaction.data?.name];
     if (handler) {
-      return handler(interaction, env, ctx);
+      return handler(interaction, env, ctx, url.origin);
     }
     return reply("Unknown command.", { ephemeral: true });
   },
@@ -408,6 +432,31 @@ const COMMAND_HANDLERS = {
     return reply("Okay, I'll take a little break from posting pictures. Use `/uma_here` to start again! 💚");
   },
 
+  async uma_cards(interaction, env, ctx, origin) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    if (!env.DISCORD_TOKEN) return reply("The Worker needs its DISCORD_TOKEN secret first.", { ephemeral: true });
+    const userId = userOf(interaction).id;
+    const token = await makeCardsToken(env, userId);
+    const count = Object.keys(await loadOwned(env, userId)).length;
+    return jsonResponse({
+      type: 4,
+      data: {
+        flags: 64,
+        content:
+          "Here's your card box! Tap the cards you have and pick their limit break. I save as you go 💚" +
+          (count ? `\nYou have **${count}** cards saved.` : "") +
+          `\n-# The link is just for you and works for ${LINK_DAYS} days.`,
+        components: [{ type: 1, components: [{ type: 2, style: 5, label: "Open my card box", url: `${origin}/cards?t=${token}` }] }],
+      },
+    });
+  },
+
+  uma_deck(interaction, env, ctx) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    ctx.waitUntil(answerDeck(interaction, env));
+    return jsonResponse({ type: 5 });
+  },
+
   async uma_status(interaction, env) {
     if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
     const settings = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
@@ -487,6 +536,319 @@ export async function runSchedule(env, now = new Date()) {
     await env.UMA_STATE.put("guilds", JSON.stringify(guilds));
   }
 }
+
+// ---- Deck builder ----------------------------------------------------------
+
+// Built weekly from the Umamusume Wiki by .github/workflows/update-card-data.yml.
+const CARD_DATA_URL =
+  "https://raw.githubusercontent.com/jedrek20005-byte/claude-test/ccr-5787c415-0zgod8/card-data/support-cards.json";
+const LINK_DAYS = 30;
+// A deck has 6 slots, but the 6th is always a card borrowed from a friend.
+const DECK_SIZE = 5;
+const DECK_GOALS = {
+  fans: { title: "the most fans", primary: "Fan Bonus", secondary: "Race Bonus" },
+  race: { title: "the best Race Bonus", primary: "Race Bonus", secondary: "Fan Bonus" },
+};
+const RARITY_RANK = { SSR: 0, SR: 1, R: 2 };
+
+const userOf = (interaction) => interaction.member?.user ?? interaction.user;
+const cardName = (card) => `${card.rarity} ${card.title ? `[${card.title}] ` : ""}${card.character}`;
+const ownedKey = (userId) => `cards:${userId}`;
+
+let cardCache = null;
+
+export function clearCardCache() {
+  cardCache = null;
+}
+
+async function loadCards(env) {
+  if (cardCache && Date.now() - cardCache.loadedAt < 6 * 60 * 60 * 1000) return cardCache;
+  const res = await fetch(env.CARD_DATA_URL || CARD_DATA_URL, { cf: { cacheTtl: 3600 } });
+  if (!res.ok) throw new Error(`Couldn't load the card data (HTTP ${res.status})`);
+  const { cards } = await res.json();
+  cardCache = { loadedAt: Date.now(), byId: new Map(cards.map((card) => [String(card.id), card])) };
+  return cardCache;
+}
+
+async function loadOwned(env, userId) {
+  return (await env.UMA_STATE.get(ownedKey(userId), "json")) || {};
+}
+
+const compareEntries = (a, b) =>
+  b.primary - a.primary || b.secondary - a.secondary || b.lb - a.lb ||
+  (RARITY_RANK[a.card.rarity] ?? 9) - (RARITY_RANK[b.card.rarity] ?? 9);
+
+// Best cards for the goal, at most one per character (the game doesn't allow two).
+// Every effect value is a plain sum across the deck, so picking each character's
+// best card and then the top five is optimal.
+export function buildDeck(owned, byId, goal) {
+  const { primary, secondary } = DECK_GOALS[goal];
+  const best = new Map();
+  for (const [id, lb] of Object.entries(owned)) {
+    const card = byId.get(String(id));
+    if (!card) continue;
+    const value = (effect) => card.effects[effect]?.[lb] ?? 0;
+    const entry = { card, lb, primary: value(primary), secondary: value(secondary) };
+    if (!entry.primary && !entry.secondary) continue;
+    const current = best.get(card.character);
+    if (!current || compareEntries(entry, current) < 0) best.set(card.character, entry);
+  }
+  return [...best.values()].sort(compareEntries).slice(0, DECK_SIZE);
+}
+
+export function deckEmbed(goal, deck) {
+  const { title, primary, secondary } = DECK_GOALS[goal];
+  const total = (key) => deck.reduce((sum, entry) => sum + entry[key], 0);
+  const lines = deck.map((entry, i) =>
+    `**${i + 1}. ${escapeMarkdown(cardName(entry.card))}** · LB${entry.lb}\n` +
+    `${primary} +${entry.primary}% · ${secondary} +${entry.secondary}%`);
+  lines.push("", `**Total: ${primary} +${total("primary")}% · ${secondary} +${total("secondary")}%**`);
+  if (deck.length < DECK_SIZE) {
+    lines.push(`Only ${deck.length} of your cards help here, so fill the other slots with your favourite training cards!`);
+  }
+  return {
+    title: `🐴 Your deck for ${title}`,
+    description: lines.join("\n"),
+    color: EMBED_COLOR,
+    footer: {
+      text: "Slot 6: borrow a friend's card with a high " + primary + ". " +
+        "Values assume each card is at the max level for its limit break.",
+    },
+  };
+}
+
+async function answerDeck(interaction, env) {
+  const editUrl = `${API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+  try {
+    const goal = DECK_GOALS[optionValues(interaction).goal] ? optionValues(interaction).goal : "fans";
+    const owned = await loadOwned(env, userOf(interaction).id);
+    let payload;
+    if (!Object.keys(owned).length) {
+      payload = { content: "You haven't told me which cards you have yet! Use `/uma_cards` to pick them 💚" };
+    } else {
+      const deck = buildDeck(owned, (await loadCards(env)).byId, goal);
+      payload = deck.length
+        ? { embeds: [deckEmbed(goal, deck)] }
+        : { content: `None of your cards have ${DECK_GOALS[goal].primary} or ${DECK_GOALS[goal].secondary}… yet!` };
+    }
+    await sendToDiscord(editUrl, "PATCH", {}, payload);
+  } catch (err) {
+    console.error(err);
+    await sendToDiscord(editUrl, "PATCH", {}, { content: "Something went wrong, sorry." }).catch(() => {});
+  }
+}
+
+// Card box links: "<user id>.<expiry>.<signature>", signed with a key derived
+// from DISCORD_TOKEN, so only the person who ran /uma_cards can edit their list.
+async function linkKey(env) {
+  const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`uma-cards:${env.DISCORD_TOKEN}`));
+  return crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+}
+
+const toBase64Url = (bytes) =>
+  btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const fromBase64Url = (text) =>
+  Uint8Array.from(atob(text.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+
+export async function makeCardsToken(env, userId, now = Date.now()) {
+  const payload = `${userId}.${Math.floor(now / 1000) + LINK_DAYS * 24 * 60 * 60}`;
+  const signature = await crypto.subtle.sign("HMAC", await linkKey(env), new TextEncoder().encode(payload));
+  return `${payload}.${toBase64Url(signature)}`;
+}
+
+// The user ID the link belongs to, or null if it's forged or expired.
+export async function readCardsToken(env, token, now = Date.now()) {
+  const [userId, expires, signature] = String(token ?? "").split(".");
+  if (!env.DISCORD_TOKEN || !/^\d+$/.test(userId ?? "") || !/^\d+$/.test(expires ?? "") || !signature) return null;
+  if (Number(expires) * 1000 < now) return null;
+  try {
+    const ok = await crypto.subtle.verify(
+      "HMAC", await linkKey(env), fromBase64Url(signature), new TextEncoder().encode(`${userId}.${expires}`),
+    );
+    return ok ? userId : null;
+  } catch {
+    return null;
+  }
+}
+
+async function myCardsApi(request, env, url) {
+  const userId = env.UMA_STATE ? await readCardsToken(env, url.searchParams.get("t")) : null;
+  if (!userId) {
+    return Response.json({ error: "This link has expired. Use /uma_cards in Discord for a new one." }, { status: 401 });
+  }
+  if (request.method === "GET") {
+    return Response.json({ cards: await loadOwned(env, userId) });
+  }
+  if (request.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+  let cards;
+  try {
+    ({ cards } = await request.json());
+  } catch {
+    return Response.json({ error: "Bad request" }, { status: 400 });
+  }
+  const entries = cards && typeof cards === "object" ? Object.entries(cards) : null;
+  const valid = entries && entries.length <= 3000 &&
+    entries.every(([id, lb]) => /^\d{1,7}$/.test(id) && Number.isInteger(lb) && lb >= 0 && lb <= 4);
+  if (!valid) {
+    return Response.json({ error: "Bad card list" }, { status: 400 });
+  }
+  await env.UMA_STATE.put(ownedKey(userId), JSON.stringify(Object.fromEntries(entries)));
+  return Response.json({ ok: true, count: entries.length });
+}
+
+async function cardsPage(env, url) {
+  const valid = env.UMA_STATE && (await readCardsToken(env, url.searchParams.get("t")));
+  const page = valid
+    ? CARDS_PAGE.replace("__DATA_URL__", env.CARD_DATA_URL || CARD_DATA_URL)
+    : CARDS_PAGE_EXPIRED;
+  return new Response(page, {
+    status: valid ? 200 : 401,
+    headers: { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer" },
+  });
+}
+
+const PAGE_HEAD = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Card box</title><style>
+:root{--bg:#f6f7f4;--fg:#1d2318;--muted:#68705f;--card:#fff;--line:#dfe3d8;--accent:#3f9a4f;--chip:#eef1ea}
+@media (prefers-color-scheme:dark){:root{--bg:#151813;--fg:#e8ebe3;--muted:#9aa391;--card:#1f241c;--line:#323a2d;--accent:#62c271;--chip:#272d23}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif}
+header{position:sticky;top:0;z-index:2;background:var(--bg);padding:12px 16px 8px;border-bottom:1px solid var(--line)}
+h1{font-size:18px;margin:0 0 8px;display:flex;justify-content:space-between;gap:8px}
+#status{font-size:13px;font-weight:normal;color:var(--muted)}
+input[type=search]{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--fg);font-size:16px}
+.chips{display:flex;gap:6px;overflow-x:auto;padding:8px 0 2px}
+.chips button{flex:none;border:1px solid var(--line);background:var(--chip);color:var(--fg);border-radius:999px;padding:6px 12px;font-size:14px}
+.chips button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+main{padding:12px 16px 40px}#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px}
+.tile{position:relative;border:2px solid var(--line);background:var(--card);border-radius:12px;padding:6px;text-align:center;color:var(--fg);font:inherit}
+.tile.owned{border-color:var(--accent)}.tile img{width:64px;height:64px;object-fit:contain;display:block;margin:0 auto 4px}
+.tile .name{font-size:12px;font-weight:600;display:block}.tile .title{font-size:11px;color:var(--muted);display:block;max-height:2.8em;overflow:hidden}
+.tile .tag{position:absolute;top:4px;left:6px;font-size:10px;color:var(--muted)}.tile .lb{display:block;font-size:12px;color:var(--accent);letter-spacing:1px}
+#sheet{position:fixed;inset:auto 0 0 0;z-index:3;background:var(--card);border-top:1px solid var(--line);border-radius:16px 16px 0 0;padding:16px;box-shadow:0 -8px 24px #0003;transform:translateY(110%);transition:transform .2s}
+#sheet.open{transform:none}#sheet h2{font-size:16px;margin:0 0 12px}#sheet .row{display:flex;gap:8px;flex-wrap:wrap}
+#sheet button{flex:1 1 18%;min-width:56px;padding:12px 0;border-radius:10px;border:1px solid var(--line);background:var(--chip);color:var(--fg);font-size:15px}
+#sheet button.on{background:var(--accent);color:#fff;border-color:var(--accent)}#sheet .remove{flex-basis:100%;margin-top:8px;background:none}
+.empty{color:var(--muted);text-align:center;padding:40px 0}
+</style></head><body>`;
+
+const CARDS_PAGE_EXPIRED = PAGE_HEAD +
+  `<main><p class="empty">This link has expired. Use <b>/uma_cards</b> in Discord to get a new one 💚</p></main></body></html>`;
+
+const CARDS_PAGE = PAGE_HEAD + `
+<header><h1>🐴 My card box <span id="status">Loading…</span></h1>
+<input id="q" type="search" placeholder="Search a character or card…" autocomplete="off">
+<div class="chips" id="filters"></div></header>
+<main><div id="grid"></div><p class="empty" id="none" hidden>No cards match.</p></main>
+<div id="sheet"><h2 id="sheet-title"></h2><div class="row" id="lbs"></div>
+<div class="row"><button class="remove" id="remove">I don't have this card</button></div></div>
+<script>
+const DATA_URL = "__DATA_URL__";
+const token = new URLSearchParams(location.search).get("t");
+const api = "/cards/mine?t=" + encodeURIComponent(token);
+const RARITY = { SSR: 0, SR: 1, R: 2 };
+const TYPES = ["Speed", "Stamina", "Power", "Guts", "Wit", "Pal", "Group"];
+const FILTERS = [["mine", "★ Mine"], ["SSR", "SSR"], ["SR", "SR"], ["R", "R"], ...TYPES.map((t) => [t, t])];
+const $ = (id) => document.getElementById(id);
+let cards = [], owned = {}, active = new Set(), current = null, saveTimer = null;
+
+const lbText = (lb) => "◆".repeat(lb) + "◇".repeat(4 - lb);
+function status(text) { $("status").textContent = text; }
+
+function matches(card) {
+  const q = $("q").value.trim().toLowerCase();
+  if (q && !(card.character + " " + card.title).toLowerCase().includes(q)) return false;
+  if (active.has("mine") && !(card.id in owned)) return false;
+  const rarities = ["SSR", "SR", "R"].filter((r) => active.has(r));
+  if (rarities.length && !rarities.includes(card.rarity)) return false;
+  const types = TYPES.filter((t) => active.has(t));
+  return !types.length || types.includes(card.type);
+}
+
+function tile(card) {
+  const b = document.createElement("button");
+  b.className = "tile" + (card.id in owned ? " owned" : "");
+  b.dataset.id = card.id;
+  const img = document.createElement("img");
+  img.loading = "lazy"; img.alt = ""; img.referrerPolicy = "no-referrer";
+  img.src = "https://umamusu.wiki/Special:FilePath/Support_Card_" + card.id + "_Icon.png?width=128";
+  img.onerror = () => img.remove();
+  const tag = document.createElement("span"); tag.className = "tag"; tag.textContent = card.rarity + " · " + card.type;
+  const name = document.createElement("span"); name.className = "name"; name.textContent = card.character;
+  const title = document.createElement("span"); title.className = "title"; title.textContent = card.title;
+  b.append(tag, img, name, title);
+  if (card.id in owned) {
+    const lb = document.createElement("span"); lb.className = "lb"; lb.textContent = lbText(owned[card.id]); b.append(lb);
+  }
+  b.onclick = () => openSheet(card);
+  return b;
+}
+
+function render() {
+  const list = cards.filter(matches);
+  $("grid").replaceChildren(...list.map(tile));
+  $("none").hidden = list.length > 0;
+}
+
+function openSheet(card) {
+  current = card;
+  $("sheet-title").textContent = card.rarity + " [" + card.title + "] " + card.character;
+  $("lbs").replaceChildren(...[0, 1, 2, 3, 4].map((lb) => {
+    const b = document.createElement("button");
+    b.textContent = "LB" + lb; b.title = lbText(lb);
+    if (owned[card.id] === lb) b.className = "on";
+    b.onclick = () => choose(lb);
+    return b;
+  }));
+  $("remove").hidden = !(card.id in owned);
+  $("sheet").classList.add("open");
+}
+
+function choose(lb) {
+  if (lb === null) delete owned[current.id]; else owned[current.id] = lb;
+  $("sheet").classList.remove("open");
+  const old = document.querySelector('.tile[data-id="' + current.id + '"]');
+  if (old) old.replaceWith(tile(current));
+  save();
+}
+
+function save() {
+  status("Saving…");
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      const res = await fetch(api, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cards: owned }) });
+      const body = await res.json();
+      status(res.ok ? "Saved ✓ " + body.count + " cards" : body.error || "Couldn't save");
+    } catch { status("Couldn't save, check your connection"); }
+  }, 600);
+}
+
+$("remove").onclick = () => choose(null);
+document.addEventListener("click", (e) => {
+  if ($("sheet").classList.contains("open") && !e.target.closest("#sheet, .tile")) $("sheet").classList.remove("open");
+});
+$("q").oninput = render;
+$("filters").replaceChildren(...FILTERS.map(([key, label]) => {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.onclick = () => { active.has(key) ? active.delete(key) : active.add(key); b.classList.toggle("on"); render(); };
+  return b;
+}));
+
+(async () => {
+  try {
+    const [data, mine] = await Promise.all([fetch(DATA_URL).then((r) => r.json()), fetch(api).then((r) => r.json())]);
+    if (mine.error) throw new Error(mine.error);
+    owned = mine.cards || {};
+    cards = data.cards.sort((a, b) => (RARITY[a.rarity] - RARITY[b.rarity]) || (b.id - a.id));
+    status(Object.keys(owned).length + " cards");
+    render();
+  } catch (err) { status(String(err.message || err)); }
+})();
+</script></body></html>`;
 
 // ---- Post history (so pictures don't repeat) -------------------------------
 

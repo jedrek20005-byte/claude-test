@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
 import worker, {
-  buildEmbed, describeSchedule, isSafe, localNow, parseTime, pickImage, postTimes, prettyCharacter, runSchedule,
+  buildDeck, buildEmbed, clearCardCache, deckEmbed, describeSchedule, isSafe, localNow, makeCardsToken, parseTime,
+  pickImage, postTimes, prettyCharacter, readCardsToken, runSchedule,
 } from "./worker.js";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
@@ -90,8 +91,10 @@ test("answers Discord's ping and registers /uma", async () => {
   assert.ok(put.url.endsWith("/applications/4242/commands"));
   assert.equal(put.init.headers.Authorization, "Bot bot-token");
   const commands = JSON.parse(put.init.body);
-  assert.deepEqual(commands.map((c) => c.name), ["uma", "uma_here", "uma_every", "uma_time", "uma_off", "uma_status"]);
-  for (const command of commands.slice(1)) {
+  assert.deepEqual(commands.map((c) => c.name), [
+    "uma", "uma_here", "uma_every", "uma_time", "uma_off", "uma_status", "uma_cards", "uma_deck",
+  ]);
+  for (const command of commands.slice(1, 6)) {
     assert.equal(command.default_member_permissions, "32"); // Manage Server
     assert.deepEqual(command.contexts, [0]); // servers only
   }
@@ -405,4 +408,110 @@ test("schedule helpers", () => {
     "every 6 hours, at **03:00, 09:00, 15:00, 21:00** (UTC)",
   );
   assert.equal(describeSchedule({ time: "09:00", timeZone: "UTC", everyHours: 2 }), "every 2 hours, at **01:00, 03:00, 05:00…** (UTC)");
+});
+
+// ---- Deck builder ------------------------------------------------------------
+
+const CARD = (id, character, rarity, fans, race, extra = {}) => ({
+  id, character, rarity, type: "Speed", title: `Title ${id}`, levels: [30, 35, 40, 45, 50],
+  effects: { ...(fans ? { "Fan Bonus": fans } : {}), ...(race ? { "Race Bonus": race } : {}), ...extra },
+});
+const CARDS = [
+  CARD(30028, "Kitasan Black", "SSR", [10, 11, 13, 15, 15], [5, 5, 5, 5, 5]),
+  CARD(20023, "Kitasan Black", "SR", [5, 5, 5, 5, 5], [3, 3, 3, 3, 3]), // same character: only the better one
+  CARD(30016, "Mejiro Ryan", "SSR", [15, 16, 17, 18, 20], [5, 6, 7, 8, 10]),
+  CARD(30043, "Gold Ship", "SSR", [0, 0, 0, 10, 15], [0, 0, 0, 5, 10]),
+  CARD(30065, "Zenno Rob Roy", "SSR", [10, 11, 12, 13, 15], [5, 5, 5, 5, 5]),
+  CARD(20013, "Nice Nature", "SR", [10, 10, 10, 10, 10], null),
+  CARD(10050, "Haru Urara", "R", [5, 5, 5, 5, 5], [5, 5, 5, 5, 5]),
+  CARD(30001, "Special Week", "SSR", null, null, { "Friendship Bonus": [20, 20, 20, 20, 20] }),
+];
+const BY_ID = new Map(CARDS.map((card) => [String(card.id), card]));
+
+test("buildDeck picks the best card per character, top five", () => {
+  const owned = { 30028: 4, 20023: 4, 30016: 2, 30043: 0, 30065: 4, 20013: 4, 10050: 4, 30001: 4 };
+  const deck = buildDeck(owned, BY_ID, "fans");
+  assert.deepEqual(deck.map((e) => [e.card.id, e.primary, e.secondary]), [
+    [30016, 17, 7], [30028, 15, 5], [30065, 15, 5], [20013, 10, 0], [10050, 5, 5],
+  ]);
+  // Gold Ship at LB0 has nothing yet, the SR Kitasan Black loses to the SSR, Special Week has neither bonus.
+
+  // For Race Bonus, a card with only Fan Bonus still fills the last slot rather than leaving it empty.
+  const race = buildDeck(owned, BY_ID, "race");
+  assert.deepEqual(race.map((e) => [e.card.id, e.primary, e.secondary]), [
+    [30016, 7, 17], [30028, 5, 15], [30065, 5, 15], [10050, 5, 5], [20013, 0, 10],
+  ]);
+});
+
+test("deck embed shows each card and the totals", () => {
+  const deck = buildDeck({ 30016: 4, 30028: 3 }, BY_ID, "fans");
+  const embed = deckEmbed("fans", deck);
+  assert.match(embed.title, /most fans/);
+  // Names are escaped for Discord markdown, which still shows them as "[Title 30016]".
+  assert.match(embed.description, /1\. SSR \\\[Title 30016\\\] Mejiro Ryan\*\* · LB4\nFan Bonus \+20% · Race Bonus \+10%/);
+  assert.match(embed.description, /Total: Fan Bonus \+35% · Race Bonus \+15%/);
+  assert.match(embed.description, /Only 2 of your cards help here/);
+  assert.match(embed.footer.text, /borrow a friend's card/);
+});
+
+test("card box links are signed, personal and expire", async () => {
+  const now = Date.UTC(2026, 10, 4);
+  const token = await makeCardsToken(ENV, "123456789", now);
+  assert.equal(await readCardsToken(ENV, token, now), "123456789");
+  assert.equal(await readCardsToken(ENV, token, now + 31 * 24 * 3600 * 1000), null); // expired
+  assert.equal(await readCardsToken(ENV, token.replace("123456789", "987654321"), now), null); // someone else
+  assert.equal(await readCardsToken({ ...ENV, DISCORD_TOKEN: "other" }, token, now), null); // different key
+  assert.equal(await readCardsToken(ENV, "garbage", now), null);
+});
+
+const asUser = (name, options) => ({ ...command(name, options), member: { user: { id: "123456789" } } });
+
+test("/uma_cards replies privately with a personal link", async () => {
+  const kv = fakeKV({ "cards:123456789": { 30028: 4, 30016: 2 } });
+  const { data } = await (await run(await signedRequest(asUser("uma_cards")), { ...ENV, UMA_STATE: kv })).json();
+  assert.equal(data.flags, 64);
+  assert.match(data.content, /\*\*2\*\* cards saved/);
+  const url = new URL(data.components[0].components[0].url);
+  assert.equal(url.origin + url.pathname, "https://uma.example.workers.dev/cards");
+  assert.equal(await readCardsToken(ENV, url.searchParams.get("t")), "123456789");
+});
+
+test("card box page and save API", async () => {
+  const kv = fakeKV();
+  const env = { ...ENV, UMA_STATE: kv };
+  const token = await makeCardsToken(env, "123456789");
+  const at = (path) => `https://uma.example.workers.dev${path}?t=${encodeURIComponent(token)}`;
+
+  const page = await run(new Request(at("/cards")), env);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /raw\.githubusercontent\.com\/.*support-cards\.json/);
+  assert.equal((await run(new Request("https://uma.example.workers.dev/cards?t=nope"), env)).status, 401);
+
+  const save = (cards) => run(new Request(at("/cards/mine"), { method: "POST", body: JSON.stringify({ cards }) }), env);
+  assert.deepEqual(await (await save({ 30028: 4, 30016: 0 })).json(), { ok: true, count: 2 });
+  assert.deepEqual(kv.json("cards:123456789"), { 30028: 4, 30016: 0 });
+  assert.deepEqual(await (await run(new Request(at("/cards/mine")), env)).json(), { cards: { 30028: 4, 30016: 0 } });
+
+  for (const bad of [{ 30028: 5 }, { 30028: "4" }, { "../x": 1 }, null]) {
+    assert.equal((await save(bad)).status, 400);
+  }
+  assert.deepEqual(kv.json("cards:123456789"), { 30028: 4, 30016: 0 });
+  const forged = new Request("https://uma.example.workers.dev/cards/mine?t=1.9999999999.abc", { method: "POST", body: "{}" });
+  assert.equal((await run(forged, env)).status, 401);
+});
+
+test("/uma_deck builds a deck from the saved cards", async () => {
+  clearCardCache();
+  routes["raw.githubusercontent.com"] = () => Response.json({ cards: CARDS });
+  const kv = fakeKV({ "cards:123456789": { 30016: 4, 30028: 4, 20023: 4 } });
+  const response = await run(await signedRequest(asUser("uma_deck", [{ name: "goal", value: "fans" }])), { ...ENV, UMA_STATE: kv });
+  assert.deepEqual(await response.json(), { type: 5 });
+  const [embed] = JSON.parse(editCalls()[0].init.body).embeds;
+  assert.match(embed.description, /Mejiro Ryan[\s\S]*Kitasan Black/);
+  assert.doesNotMatch(embed.description, /SR \[Title 20023\]/);
+});
+
+test("/uma_deck without saved cards points to /uma_cards", async () => {
+  await run(await signedRequest(asUser("uma_deck")), { ...ENV, UMA_STATE: fakeKV() });
+  assert.match(JSON.parse(editCalls()[0].init.body).content, /uma_cards/);
 });
