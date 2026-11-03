@@ -1,0 +1,8 @@
+# Cloudflare Worker that answers the /uma slash command (see README,
+# "Slash command without a computer"). The Python bot and the GitHub Actions
+# daily post don't use this file.
+name = "claude-test"
+main = "discord-worker/worker.js"
+compatibility_date = "2026-07-01"
+# Keep variables added in the Cloudflare dashboard when GitHub pushes redeploy.
+keep_vars = true

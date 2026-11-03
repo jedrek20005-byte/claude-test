@@ -21,7 +21,8 @@ Features:
 
 There are two ways to run it:
 
-- **[Easy way, no computer needed](#easy-way-no-computer-needed-github-actions)**: GitHub runs it for free once an hour and it posts through a Discord webhook. You can set it all up from a phone. There are no slash commands in this mode.
+- **[Easy way, no computer needed](#easy-way-no-computer-needed-github-actions)**: GitHub runs it for free once an hour and it posts through a Discord webhook. You can set it all up from a phone.
+  - Add **[`/uma` without a computer](#slash-command-without-a-computer-cloudflare-workers)** on top: a free Cloudflare Worker answers the command.
 - **[Full bot](#1-create-the-discord-bot)**: an always-on bot with `/uma` and `/uma_status`. It needs a computer or server that stays on.
 
 ## Easy way, no computer needed (GitHub Actions)
@@ -36,6 +37,22 @@ The workflow in [`.github/workflows/daily-post.yml`](.github/workflows/daily-pos
 4. **Optional:** change settings by adding repository **variables** (same page, **Variables** tab), e.g. `POST_TIME` = `09:00` and `TIMEZONE` = `Europe/Warsaw`. Any setting from the [configuration table](#configuration) works, except the Discord ones.
 
 After a successful post, the workflow commits the post history to `state/history.json`, so pictures never repeat. These daily commits also stop GitHub from pausing the schedule, which it does in repos with no activity for 60 days. GitHub can start scheduled runs a bit late, so the picture usually arrives within an hour after `POST_TIME`.
+
+## Slash command without a computer (Cloudflare Workers)
+
+[`discord-worker/worker.js`](discord-worker/worker.js) answers `/uma` with a random SFW picture. It uses the same sites and blacklist as the bot, without the post history. Discord sends each command to the Worker over HTTPS, so nothing has to stay online, and Cloudflare's free plan is plenty. Every step works in a phone browser; switch to "desktop site" if a page looks cut off.
+
+1. **Create a Discord application:** open <https://discord.com/developers/applications> → **New Application**, give it a name (e.g. "Umamusume") → **Create**.
+   - On **General Information**, copy the **Public Key** and keep it somewhere for step 3.
+   - Open **Bot** → **Reset Token** and copy the token too.
+2. **Deploy the Worker from GitHub:** sign up at <https://dash.cloudflare.com> (free) → **Workers & Pages** → **Create** → **Import a repository** → connect GitHub and pick this repo. Keep the suggested name `claude-test` and the default settings, then tap **Deploy**.
+3. **Add the two keys:** in the new Worker, go to **Settings** → **Variables and Secrets** → **Add**. Choose type **Secret** for both:
+   - `DISCORD_PUBLIC_KEY` = the Public Key from step 1
+   - `DISCORD_TOKEN` = the bot token from step 1
+4. **Register the command:** open the Worker's address with `/register` on the end, e.g. `https://claude-test.YOUR-NAME.workers.dev/register`. You'll find the address on the Worker's overview page. Then tap **Add to Discord** and pick your server.
+5. **Point Discord at the Worker:** back in the Developer Portal → **General Information** → **Interactions Endpoint URL**, paste the Worker's address (without `/register`) → **Save Changes**.
+
+Now type `/uma` in your server. Opening the Worker's plain address shows whether both keys are set. Every push to this repo redeploys the Worker automatically, and the keys stay.
 
 ## 1. Create the Discord bot
 
@@ -157,6 +174,8 @@ pytest
 
 The tests run against local fake versions of every site's API, so they don't need network access.
 
+The Cloudflare Worker has its own tests, which need only Node.js 20+: `node --test discord-worker/worker.test.mjs`.
+
 Project layout:
 
 ```
@@ -171,6 +190,7 @@ umabot/
   posting.py      downloads the image and builds the embed
   schedule.py     time-zone and DST-safe scheduling helpers
   sources/        one module per site (Danbooru, Safebooru, Gelbooru, Konachan, Zerochan)
+discord-worker/  /uma as a Cloudflare Worker (no always-on bot needed)
 ```
 
 Please respect each site's terms of service and rate limits. The bot makes only a few requests per day plus one per `/uma`.
