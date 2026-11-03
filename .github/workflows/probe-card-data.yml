@@ -43,13 +43,23 @@ jobs:
                   print(json.dumps(data, ensure_ascii=False)[:limit])
               return data
 
-          # Round 4: the wiki modules that render support cards, and the effect type names.
+          # Round 5: read the Supports module, then try each of its functions on a real SSR card.
           import urllib.parse
-          RAW = "https://gitlab.com/umamusume-wiki/lua-modules/-/raw/main/modules/"
-          for path in ("Game/Supports.lua", "Game/Supports/Data/Effects.lua"):
-              t = get(RAW + path)
-              if t:
-                  print(t if path.endswith("Supports.lua") else t[t.index("function Effects.getPrettyName"):][:4500])
-          # Which wiki pages invoke the Supports module?
-          t = get("https://umamusu.wiki/w/api.php?format=json&action=query&list=search&srlimit=10&srsearch=" + urllib.parse.quote('insource:"Game/Supports"'))
-          if t: print(t[:2500])
+          W = "https://umamusu.wiki/w/api.php?format=json&"
+          src = get("https://umamusu.wiki/Module:Game/Supports?action=raw") or ""
+          print(src[:9000])
+          eff = get("https://umamusu.wiki/Module:Game/Supports/Data/Effects?action=raw") or ""
+          i = eff.find("function Effects.getPrettyName")
+          print(eff[i:i + 4000])
+          cards = json.loads(get("https://umapyoi.net/api/v1/support") or "[]")
+          ssr = next((c for c in cards if str(c.get("id", "")).startswith("3")), None)
+          print("SSR sample:", ssr)
+          names = sorted(set(re.findall(r"function \w+\.(\w+)\s*\(\s*frame", src)))
+          print("frame functions:", names)
+          for name in names[:12]:
+              for args in (f"|{ssr['id']}", f"|id={ssr['id']}"):
+                  text = "{{#invoke:Game/Supports|%s%s}}" % (name, args)
+                  t = get(W + "action=expandtemplates&prop=wikitext&text=" + urllib.parse.quote(text))
+                  if t:
+                      out = json.loads(t).get("expandtemplates", {}).get("wikitext", "")
+                      print(f"--- {text}: {len(out)} chars\n{out[:1800]}")
