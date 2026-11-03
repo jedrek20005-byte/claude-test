@@ -22,7 +22,7 @@ Features:
 There are two ways to run it:
 
 - **[Easy way, no computer needed](#easy-way-no-computer-needed-github-actions)**: GitHub runs it for free once an hour and it posts through a Discord webhook. You can set it all up from a phone.
-  - Add **[`/uma` without a computer](#slash-command-without-a-computer-cloudflare-workers)** on top: a free Cloudflare Worker answers the command.
+  - Or use **[a free Cloudflare Worker](#slash-commands-without-a-computer-cloudflare-workers)** instead: `/uma`, plus commands to set where and when the daily picture is posted.
 - **[Full bot](#1-create-the-discord-bot)**: an always-on bot with `/uma` and `/uma_status`. It needs a computer or server that stays on.
 
 ## Easy way, no computer needed (GitHub Actions)
@@ -38,21 +38,38 @@ The workflow in [`.github/workflows/daily-post.yml`](.github/workflows/daily-pos
 
 After a successful post, the workflow commits the post history to `state/history.json`, so pictures never repeat. These daily commits also stop GitHub from pausing the schedule, which it does in repos with no activity for 60 days. GitHub can start scheduled runs a bit late, so the picture usually arrives within an hour after `POST_TIME`.
 
-## Slash command without a computer (Cloudflare Workers)
+## Slash commands without a computer (Cloudflare Workers)
 
-[`discord-worker/worker.js`](discord-worker/worker.js) answers `/uma` with a random SFW picture. It uses the same sites and blacklist as the bot, without the post history. Discord sends each command to the Worker over HTTPS, so nothing has to stay online, and Cloudflare's free plan is plenty. Every step works in a phone browser; switch to "desktop site" if a page looks cut off.
+[`discord-worker/worker.js`](discord-worker/worker.js) is the whole app as a Cloudflare Worker. Discord sends each command to it over HTTPS, and a cron trigger wakes it up for the daily picture, so nothing has to stay online. Cloudflare's free plan is plenty. It uses the same sites and blacklist as the bot.
 
-1. **Create a Discord application:** open <https://discord.com/developers/applications> → **New Application**, give it a name (e.g. "Umamusume") → **Create**.
-   - On **General Information**, copy the **Public Key** and keep it somewhere for step 3.
+| Command | Who sees it | What it does |
+| --- | --- | --- |
+| `/uma` | everyone | posts a random SFW picture right away |
+| `/uma_here` | Manage Server | posts the daily picture in this channel (and turns it on) |
+| `/uma_time time:09:00 timezone:Europe/Warsaw` | Manage Server | sets the daily time; the time zone is picked from a list |
+| `/uma_off` | Manage Server | pauses the daily picture (`/uma_here` turns it back on) |
+| `/uma_status` | Manage Server | shows the channel, time, last post and last problem |
+
+The daily picture comes from the app itself, within 5 minutes of the set time. Pictures don't repeat: the post history is kept in Cloudflare KV. If posting fails, the Worker tries again 30 minutes later.
+
+Every step below works in a phone browser; switch to "desktop site" if a page looks cut off.
+
+1. **Create a Discord application:** open <https://discord.com/developers/applications> → **New Application**, give it a name → **Create**.
+   - On **General Information**, copy the **Public Key**.
    - Open **Bot** → **Reset Token** and copy the token too.
-2. **Deploy the Worker from GitHub:** sign up at <https://dash.cloudflare.com> (free) → **Workers & Pages** → **Create** → **Import a repository** → connect GitHub and pick this repo. Keep the suggested name `claude-test` and the default settings, then tap **Deploy**.
-3. **Add the two keys:** in the new Worker, go to **Settings** → **Variables and Secrets** → **Add**. Choose type **Secret** for both:
-   - `DISCORD_PUBLIC_KEY` = the Public Key from step 1
-   - `DISCORD_TOKEN` = the bot token from step 1
-4. **Register the command:** open the Worker's address with `/register` on the end, e.g. `https://claude-test.YOUR-NAME.workers.dev/register`. You'll find the address on the Worker's overview page. Then tap **Add to Discord** and pick your server.
-5. **Point Discord at the Worker:** back in the Developer Portal → **General Information** → **Interactions Endpoint URL**, paste the Worker's address (without `/register`) → **Save Changes**.
+2. **Create the Worker:** sign up at <https://dash.cloudflare.com> (free) → **Workers & Pages** → **Create**. Either:
+   - **Import a repository** → pick this repo → **Deploy**, or
+   - **Start with Hello World!** → **Deploy** → **Edit code**, then paste the contents of [`discord-worker/worker.js`](https://raw.githubusercontent.com/jedrek20005-byte/claude-test/ccr-5787c415-0zgod8/discord-worker/worker.js) and tap **Deploy**.
+3. **Add the keys** in the Worker → **Settings** → **Variables and Secrets** → **Add**, with type **Secret**:
+   - `DISCORD_PUBLIC_KEY` = the Public Key
+   - `DISCORD_TOKEN` = the bot token
+4. **Add storage:** Worker → **Settings** → **Bindings** → **Add** → **KV namespace**. Name the variable `UMA_STATE` and create a new namespace for it (any name).
+5. **Add the timer:** Worker → **Settings** → **Trigger events** (or **Triggers**) → **Add** → **Cron trigger** → every 5 minutes (`*/5 * * * *`).
+6. **Register the commands:** open the Worker's address with `/register` on the end, e.g. `https://NAME.YOUR-NAME.workers.dev/register`. Then tap **Add to Discord** and pick your server. This adds the app as a bot so it can post the daily picture.
+7. **Point Discord at the Worker:** Developer Portal → **General Information** → **Interactions Endpoint URL**, paste the Worker's address (without `/register`) → **Save Changes**. Reload the page to check it stayed.
+8. **Set it up in Discord:** run `/uma_here` in the channel for the daily picture, then `/uma_time`.
 
-Now type `/uma` in your server. Opening the Worker's plain address shows whether both keys are set. Every push to this repo redeploys the Worker automatically, and the keys stay.
+Opening the Worker's plain address shows whether the keys and storage are set up. If you used the GitHub Actions daily post before, turn it off (Actions → **Daily Umamusume picture** → **⋯** → **Disable workflow**) so the picture isn't posted twice.
 
 ## 1. Create the Discord bot
 
@@ -190,7 +207,7 @@ umabot/
   posting.py      downloads the image and builds the embed
   schedule.py     time-zone and DST-safe scheduling helpers
   sources/        one module per site (Danbooru, Safebooru, Gelbooru, Konachan, Zerochan)
-discord-worker/  /uma as a Cloudflare Worker (no always-on bot needed)
+discord-worker/  slash commands + daily picture as a Cloudflare Worker (no always-on bot needed)
 ```
 
 Please respect each site's terms of service and rate limits. The bot makes only a few requests per day plus one per `/uma`.

@@ -1,8 +1,18 @@
-# Cloudflare Worker that answers the /uma slash command (see README,
-# "Slash command without a computer"). The Python bot and the GitHub Actions
+# Cloudflare Worker for the slash commands and the daily picture (see README,
+# "Slash commands without a computer"). The Python bot and the GitHub Actions
 # daily post don't use this file.
 name = "claude-test"
 main = "discord-worker/worker.js"
 compatibility_date = "2026-07-01"
 # Keep variables added in the Cloudflare dashboard when GitHub pushes redeploy.
 keep_vars = true
+
+# Checks every 5 minutes whether it's time for the daily picture.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# The UMA_STATE KV namespace (settings and post history) is created in the
+# Cloudflare dashboard; to deploy with Wrangler instead, add it here:
+# [[kv_namespaces]]
+# binding = "UMA_STATE"
+# id = "<namespace id>"

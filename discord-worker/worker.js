@@ -1,13 +1,16 @@
-// The /uma slash command as a Cloudflare Worker.
+// The Umamusume Discord app as a Cloudflare Worker: /uma, the daily picture,
+// and commands to set where and when the daily picture is posted.
 //
 // Discord sends each command to this Worker over HTTPS ("interactions
-// endpoint"), so there's no bot process to keep online. The daily post is
-// handled separately by the GitHub Actions workflow. Setup steps: README,
-// "Slash command without a computer".
+// endpoint"), and a cron trigger wakes it up to post the daily picture, so
+// there's no bot process to keep online. Setup steps: README, "Slash commands
+// without a computer".
 //
-// Secrets (Worker → Settings → Variables and Secrets):
-//   DISCORD_PUBLIC_KEY  Developer Portal → your app → General Information → Public Key
-//   DISCORD_TOKEN       Developer Portal → your app → Bot → Reset Token (only used to register /uma)
+// Worker → Settings:
+//   Secret DISCORD_PUBLIC_KEY  Developer Portal → your app → General Information → Public Key
+//   Secret DISCORD_TOKEN       Developer Portal → your app → Bot → Reset Token
+//   KV namespace binding UMA_STATE   stores the settings and post history (needed for the daily picture)
+//   Cron trigger */5 * * * *         checks every 5 minutes whether it's time for the daily picture
 
 const API = "https://discord.com/api/v10";
 const USER_AGENT = "UmamusumeDailyBot/1.0 (+https://github.com/jedrek20005-byte/claude-test)";
@@ -16,8 +19,57 @@ const EMBED_COLOR = 0x5fbf6e;
 const ALLOWED_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
 const GENERAL = 0;
 const UNKNOWN = 9;
+const DAILY_TITLE = "🐴 Umamusume of the Day";
+const RANDOM_TITLE = "🐴 Random Umamusume";
+const RETRY_AFTER_MS = 30 * 60 * 1000;
+const HISTORY_LENGTH = 2000;
+// View Channel + Send Messages + Embed Links + Attach Files
+const BOT_PERMISSIONS = "52224";
+const BOT_USER_AGENT = "DiscordBot (https://github.com/jedrek20005-byte/claude-test, 1.0)";
 
-const COMMANDS = [{ name: "uma", description: "Post a random SFW Umamusume picture", type: 1 }];
+const DEFAULT_SETTINGS = {
+  enabled: false,
+  channelId: null,
+  time: "12:00",
+  timeZone: "UTC",
+  lastDaily: null, // local date of the last daily picture
+  lastError: null,
+  retryAfter: 0,
+};
+
+const TIME_ZONES = [
+  "UTC", "Europe/London", "Europe/Lisbon", "Europe/Paris", "Europe/Berlin", "Europe/Warsaw",
+  "Europe/Rome", "Europe/Madrid", "Europe/Athens", "Europe/Kyiv", "Europe/Istanbul",
+  "Europe/Moscow", "Asia/Dubai", "Asia/Kolkata", "Asia/Bangkok", "Asia/Shanghai",
+  "Asia/Singapore", "Asia/Tokyo", "Asia/Seoul", "Australia/Sydney", "Pacific/Auckland",
+  "America/Sao_Paulo", "America/New_York", "America/Chicago", "America/Los_Angeles",
+];
+
+// Settings commands are only shown to people with Manage Server, and only in servers.
+const ADMIN_ONLY = { default_member_permissions: "32", contexts: [0] };
+
+const COMMANDS = [
+  { name: "uma", description: "Post a random SFW Umamusume picture", type: 1 },
+  { name: "uma_here", description: "Post the daily Umamusume picture in this channel", type: 1, ...ADMIN_ONLY },
+  {
+    name: "uma_time",
+    description: "Set what time the daily picture is posted",
+    type: 1,
+    ...ADMIN_ONLY,
+    options: [
+      { type: 3, name: "time", description: "24-hour time, like 09:00 or 21:30", required: true, max_length: 5 },
+      {
+        type: 3,
+        name: "timezone",
+        description: "Your time zone (keeps the current one if left empty)",
+        required: false,
+        choices: TIME_ZONES.map((zone) => ({ name: zone, value: zone })),
+      },
+    ],
+  },
+  { name: "uma_off", description: "Stop posting the daily picture", type: 1, ...ADMIN_ONLY },
+  { name: "uma_status", description: "Show the daily picture settings", type: 1, ...ADMIN_ONLY },
+];
 
 // Same list as DEFAULT_BLACKLIST in umabot/config.py; * is a wildcard.
 const BLACKLIST = [
@@ -57,16 +109,19 @@ export default {
 
     if (interaction.type === 1) {
       // Discord pings the endpoint when it's saved in the Developer Portal:
-      // a good moment to make sure /uma is registered.
+      // a good moment to make sure the commands are registered.
       ctx.waitUntil(registerCommands(env).catch((err) => console.error(err.message)));
       return jsonResponse({ type: 1 });
     }
-    if (interaction.type === 2 && interaction.data?.name === "uma") {
-      // Reply "thinking…" right away (Discord allows 3 seconds), then edit in the picture.
-      ctx.waitUntil(answerUma(interaction));
-      return jsonResponse({ type: 5 });
+    const handler = interaction.type === 2 && COMMAND_HANDLERS[interaction.data?.name];
+    if (handler) {
+      return handler(interaction, env, ctx);
     }
-    return jsonResponse({ type: 4, data: { content: "Unknown command.", flags: 64 } });
+    return reply("Unknown command.", { ephemeral: true });
+  },
+
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(runDaily(env, new Date(controller.scheduledTime)));
   },
 };
 
@@ -97,14 +152,21 @@ export async function isFromDiscord(request, body, publicKey) {
   }
 }
 
+function botHeaders(env) {
+  return { Authorization: `Bot ${env.DISCORD_TOKEN.trim()}`, "User-Agent": BOT_USER_AGENT };
+}
+
+function reply(content, { ephemeral = false } = {}) {
+  return jsonResponse({ type: 4, data: { content, flags: ephemeral ? 64 : 0, allowed_mentions: { parse: [] } } });
+}
+
+const inviteLink = (appId) =>
+  `https://discord.com/oauth2/authorize?client_id=${appId}&scope=bot+applications.commands&permissions=${BOT_PERMISSIONS}`;
+
 async function discordApi(env, path, init = {}) {
   const res = await fetch(`${API}${path}`, {
     ...init,
-    headers: {
-      Authorization: `Bot ${env.DISCORD_TOKEN.trim()}`,
-      "Content-Type": "application/json",
-      "User-Agent": "DiscordBot (https://github.com/jedrek20005-byte/claude-test, 1.0)",
-    },
+    headers: { ...botHeaders(env), "Content-Type": "application/json" },
   });
   if (!res.ok) {
     throw new Error(`Discord returned HTTP ${res.status} for ${path}: ${await res.text()}`);
@@ -124,13 +186,12 @@ export async function registerCommands(env) {
 async function registerPage(env) {
   try {
     const app = await registerCommands(env);
-    const invite = `https://discord.com/oauth2/authorize?client_id=${app.id}&scope=applications.commands`;
     return new Response(
       `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">` +
         `<body style="font:18px sans-serif;padding:16px;line-height:1.5">` +
-        `<p>✅ /uma is registered for <b>${escapeHtml(app.name)}</b>.</p>` +
-        `<p>Next, add it to your server:</p>` +
-        `<p><a href="${invite}" style="font-size:22px">Add to Discord</a></p></body>`,
+        `<p>✅ The commands are registered for <b>${escapeHtml(app.name)}</b>.</p>` +
+        `<p>Next, add it to your server (this also lets it post the daily picture):</p>` +
+        `<p><a href="${inviteLink(app.id)}" style="font-size:22px">Add to Discord</a></p></body>`,
       { headers: { "Content-Type": "text/html; charset=utf-8" } },
     );
   } catch (err) {
@@ -145,49 +206,241 @@ function statusPage(env) {
     "",
     check("DISCORD_PUBLIC_KEY"),
     check("DISCORD_TOKEN"),
+    check("UMA_STATE") + (env.UMA_STATE ? "" : " (a KV namespace binding, needed for the daily picture)"),
     "",
-    "Open /register on this address to register /uma and get the invite link.",
+    "Open /register on this address to register the commands and get the invite link.",
   ].join("\n");
   return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
 }
 
-async function answerUma(interaction) {
+async function answerUma(interaction, env) {
   const editUrl = `${API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
   try {
-    const image = await pickImage();
+    const seen = await loadSeen(env);
+    const image = await pickImage(SOURCES, seen);
     if (!image) {
-      await editReply(editUrl, { content: "Couldn't find a picture right now, try again in a bit." });
+      await sendToDiscord(editUrl, "PATCH", {}, { content: "Couldn't find a picture right now, try again in a bit." });
       return;
     }
-    const file = await downloadImage(image);
-    if (file) {
-      try {
-        await editReply(editUrl, { embeds: [buildEmbed(image, `attachment://${file.name}`)] }, file);
-        return;
-      } catch (err) {
-        console.error(`Upload failed, linking instead: ${err.message}`);
-      }
-    }
-    await editReply(editUrl, { embeds: [buildEmbed(image, image.imageUrl)] });
+    await deliver(editUrl, "PATCH", {}, image, RANDOM_TITLE);
+    await remember(env, image);
   } catch (err) {
     console.error(err);
-    await editReply(editUrl, { content: "Something went wrong, sorry." }).catch(() => {});
+    await sendToDiscord(editUrl, "PATCH", {}, { content: "Something went wrong, sorry." }).catch(() => {});
   }
 }
 
-async function editReply(url, payload, file) {
+// Sends a message (or edits one), with the picture uploaded as a file when it
+// could be downloaded, and as a link otherwise.
+async function deliver(url, method, headers, image, title) {
+  const file = await downloadImage(image);
+  if (file) {
+    try {
+      await sendToDiscord(url, method, headers, { embeds: [buildEmbed(image, `attachment://${file.name}`, title)] }, file);
+      return;
+    } catch (err) {
+      console.error(`Upload failed, linking instead: ${err.message}`);
+    }
+  }
+  await sendToDiscord(url, method, headers, { embeds: [buildEmbed(image, image.imageUrl, title)] });
+}
+
+async function sendToDiscord(url, method, headers, payload, file) {
   let init;
   if (file) {
     const form = new FormData();
     form.append("payload_json", JSON.stringify({ ...payload, attachments: [{ id: 0, filename: file.name }] }));
     form.append("files[0]", new Blob([file.data], { type: file.type }), file.name);
-    init = { method: "PATCH", body: form };
+    init = { method, headers, body: form };
   } else {
-    init = { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) };
+    init = { method, headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(payload) };
   }
   const res = await fetch(url, init);
   if (!res.ok) {
     throw new Error(`Discord returned HTTP ${res.status}: ${await res.text()}`);
+  }
+}
+
+// ---- Settings commands -----------------------------------------------------
+
+const NO_STORAGE =
+  "I can't remember settings yet… The Worker needs a KV namespace binding called `UMA_STATE` (see the README).";
+
+async function loadGuilds(env) {
+  return (await env.UMA_STATE.get("guilds", "json")) || {};
+}
+
+async function updateGuild(env, guildId, change) {
+  const guilds = await loadGuilds(env);
+  const settings = { ...DEFAULT_SETTINGS, ...guilds[guildId], ...change };
+  guilds[guildId] = settings;
+  await env.UMA_STATE.put("guilds", JSON.stringify(guilds));
+  return settings;
+}
+
+export function parseTime(text) {
+  const match = String(text ?? "").trim().match(/^(\d{1,2})(?:[:.](\d{2}))?$/);
+  if (!match || Number(match[1]) > 23 || Number(match[2] ?? 0) > 59) {
+    return null;
+  }
+  return `${match[1].padStart(2, "0")}:${match[2] ?? "00"}`;
+}
+
+function isTimeZone(zone) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The local date ("2026-11-03") and time ("09:05") at `date` in `timeZone`.
+export function localNow(date, timeZone) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(date).map((part) => [part.type, part.value]),
+  );
+  return { day: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
+}
+
+const schedule = (settings) => `**${settings.time}** (${settings.timeZone})`;
+
+const COMMAND_HANDLERS = {
+  uma(interaction, env, ctx) {
+    // Reply "thinking…" right away (Discord allows 3 seconds), then edit in the picture.
+    ctx.waitUntil(answerUma(interaction, env));
+    return jsonResponse({ type: 5 });
+  },
+
+  uma_here(interaction, env, ctx) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    ctx.waitUntil(useThisChannel(interaction, env));
+    return jsonResponse({ type: 5 });
+  },
+
+  async uma_time(interaction, env) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    const options = Object.fromEntries((interaction.data.options || []).map((option) => [option.name, option.value]));
+    const time = parseTime(options.time);
+    if (!time) {
+      return reply("Hmm… I didn't understand that time. Please write it like `09:00` or `21:30`!", { ephemeral: true });
+    }
+    if (options.timezone && !isTimeZone(options.timezone)) {
+      return reply(`I don't know the time zone "${options.timezone}"… Try one from the list!`, { ephemeral: true });
+    }
+    const change = options.timezone ? { time, timeZone: options.timezone } : { time };
+    const settings = await updateGuild(env, interaction.guild_id, change);
+    let text = `Got it! I'll post a new picture every day at ${schedule(settings)} 💚`;
+    if (!settings.enabled || !settings.channelId) {
+      text += "\nNow use `/uma_here` in the channel where I should post!";
+    }
+    return reply(text);
+  },
+
+  async uma_off(interaction, env) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    await updateGuild(env, interaction.guild_id, { enabled: false });
+    return reply("Okay, I'll take a little break from the daily picture. Use `/uma_here` to start again! 💚");
+  },
+
+  async uma_status(interaction, env) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    const settings = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
+    const lines = [
+      `📅 Daily picture: ${settings.enabled && settings.channelId ? "on" : "off"}`,
+      `📍 Channel: ${settings.channelId ? `<#${settings.channelId}>` : "not set (use `/uma_here`)"}`,
+      `⏰ Time: ${schedule(settings)}`,
+      `🖼️ Last daily picture: ${settings.lastDaily || "not yet"}`,
+    ];
+    if (settings.lastError) {
+      lines.push(`⚠️ Last problem: ${settings.lastError.slice(0, 300)}`);
+    }
+    return reply(lines.join("\n"), { ephemeral: true });
+  },
+};
+
+async function useThisChannel(interaction, env) {
+  const editUrl = `${API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+  try {
+    const channelId = interaction.channel_id ?? interaction.channel?.id;
+    // Only works once Belno is in the server as a bot and can see the channel.
+    const check = env.DISCORD_TOKEN ? await fetch(`${API}/channels/${channelId}`, { headers: botHeaders(env) }) : null;
+    if (!check?.ok) {
+      const content =
+        `I can't post in this channel yet… 🥺 Please [add me as a bot](${inviteLink(interaction.application_id)}) ` +
+        "and make sure I can see this channel, then use `/uma_here` again!";
+      await sendToDiscord(editUrl, "PATCH", {}, { content });
+      return;
+    }
+    const settings = await updateGuild(env, interaction.guild_id, {
+      channelId, enabled: true, lastError: null, retryAfter: 0,
+    });
+    await sendToDiscord(editUrl, "PATCH", {}, {
+      content: `Yay! From now on I'll post a picture here every day at ${schedule(settings)} 💚\n` +
+        "Use `/uma_time` to change the time.",
+    });
+  } catch (err) {
+    console.error(err);
+    await sendToDiscord(editUrl, "PATCH", {}, { content: "Something went wrong, sorry." }).catch(() => {});
+  }
+}
+
+// ---- Daily picture ---------------------------------------------------------
+
+// Runs from the cron trigger: posts in every server whose time has come and
+// that hasn't had today's picture yet. A failed post is retried 30 minutes later.
+export async function runDaily(env, now = new Date()) {
+  if (!env.UMA_STATE || !env.DISCORD_TOKEN) return;
+  const updates = {};
+  for (const [guildId, stored] of Object.entries(await loadGuilds(env))) {
+    const settings = { ...DEFAULT_SETTINGS, ...stored };
+    const local = localNow(now, settings.timeZone);
+    if (
+      !settings.enabled || !settings.channelId || settings.lastDaily === local.day ||
+      local.time < settings.time || now.getTime() < settings.retryAfter
+    ) {
+      continue;
+    }
+    try {
+      const image = await pickImage(SOURCES, await loadSeen(env));
+      if (!image) throw new Error("None of the image sites returned a picture.");
+      await deliver(`${API}/channels/${settings.channelId}/messages`, "POST", botHeaders(env), image, DAILY_TITLE);
+      await remember(env, image);
+      updates[guildId] = { lastDaily: local.day, lastError: null, retryAfter: 0 };
+    } catch (err) {
+      console.error(`Daily picture for server ${guildId} failed: ${err.message}`);
+      updates[guildId] = { lastError: err.message, retryAfter: now.getTime() + RETRY_AFTER_MS };
+    }
+  }
+  if (Object.keys(updates).length) {
+    // Re-read so a settings command run meanwhile isn't overwritten.
+    const guilds = await loadGuilds(env);
+    for (const [guildId, update] of Object.entries(updates)) {
+      guilds[guildId] = { ...DEFAULT_SETTINGS, ...guilds[guildId], ...update };
+    }
+    await env.UMA_STATE.put("guilds", JSON.stringify(guilds));
+  }
+}
+
+// ---- Post history (so pictures don't repeat) -------------------------------
+
+const imageKey = (image) => `${image.source}:${image.id}`;
+
+async function loadSeen(env) {
+  if (!env.UMA_STATE) return new Set();
+  return new Set((await env.UMA_STATE.get("history", "json")) || []);
+}
+
+async function remember(env, image) {
+  if (!env.UMA_STATE) return;
+  try {
+    const history = (await env.UMA_STATE.get("history", "json")) || [];
+    history.push(imageKey(image), ...(image.md5 ? [image.md5] : []));
+    await env.UMA_STATE.put("history", JSON.stringify(history.slice(-HISTORY_LENGTH)));
+  } catch (err) {
+    console.error(`Couldn't save the post history: ${err.message}`);
   }
 }
 
@@ -282,6 +535,7 @@ export const SOURCES = [
           characters: (post.tag_string_character || "").split(" ").filter(Boolean),
           sourceUrl: sourceLink(post.source, post.pixiv_id),
           score: toInt(post.score),
+          md5: post.md5 || null,
         }));
     },
   },
@@ -315,6 +569,7 @@ export const SOURCES = [
             characters: guessCharacters(tags),
             sourceUrl: sourceLink(post.source),
             score: toInt(post.score),
+            md5: post.hash || post.md5 || null,
           };
         })
         .filter((post) => post.imageUrl);
@@ -343,6 +598,7 @@ export const SOURCES = [
             characters: guessCharacters(tags),
             sourceUrl: sourceLink(post.source),
             score: toInt(post.score),
+            md5: post.md5 || null,
           };
         });
     },
@@ -360,7 +616,7 @@ function shuffled(items) {
   return copy;
 }
 
-export async function pickImage(sources = SOURCES) {
+export async function pickImage(sources = SOURCES, seen = new Set()) {
   for (const source of shuffled(sources)) {
     // A random page for variety; page 0 as a fallback if that one is past the end.
     for (const page of new Set([randomInt(source.pages), 0])) {
@@ -371,7 +627,7 @@ export async function pickImage(sources = SOURCES) {
         console.error(`${source.name} is unavailable: ${err.message}`);
         break;
       }
-      const safe = posts.filter(isSafe);
+      const safe = posts.filter((post) => isSafe(post) && !seen.has(imageKey(post)) && !(post.md5 && seen.has(post.md5)));
       if (safe.length) {
         return safe[randomInt(safe.length)];
       }
@@ -414,7 +670,7 @@ function joinLimited(items, limit = 4) {
   return items.length <= limit ? items.join(", ") : `${items.slice(0, limit).join(", ")} +${items.length - limit} more`;
 }
 
-export function buildEmbed(image, imageUrl) {
+export function buildEmbed(image, imageUrl, title = RANDOM_TITLE) {
   const lines = [];
   if (image.characters.length) {
     lines.push(`**Characters:** ${joinLimited(image.characters.map((c) => escapeMarkdown(prettyCharacter(c))))}`);
@@ -426,7 +682,7 @@ export function buildEmbed(image, imageUrl) {
     lines.push(`**Original:** [source](${image.sourceUrl.replace(/\(/g, "%28").replace(/\)/g, "%29")})`);
   }
   return {
-    title: "🐴 Random Umamusume",
+    title,
     url: image.pageUrl,
     description: lines.join("\n") || undefined,
     color: EMBED_COLOR,
