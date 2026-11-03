@@ -43,23 +43,27 @@ jobs:
                   print(json.dumps(data, ensure_ascii=False)[:limit])
               return data
 
-          # Round 5: read the Supports module, then try each of its functions on a real SSR card.
-          import urllib.parse
+          # Round 6: the wiki's card list (Cargo) and batching several cards per request.
+          import time, urllib.parse
           W = "https://umamusu.wiki/w/api.php?format=json&"
-          src = get("https://umamusu.wiki/Module:Game/Supports?action=raw") or ""
-          print(src[:9000])
-          eff = get("https://umamusu.wiki/Module:Game/Supports/Data/Effects?action=raw") or ""
-          i = eff.find("function Effects.getPrettyName")
-          print(eff[i:i + 4000])
-          cards = json.loads(get("https://umapyoi.net/api/v1/support") or "[]")
-          ssr = next((c for c in cards if str(c.get("id", "")).startswith("3")), None)
-          print("SSR sample:", ssr)
-          names = sorted(set(re.findall(r"function \w+\.(\w+)\s*\(\s*frame", src)))
-          print("frame functions:", names)
-          for name in names[:12]:
-              for args in (f"|{ssr['id']}", f"|id={ssr['id']}"):
-                  text = "{{#invoke:Game/Supports|%s%s}}" % (name, args)
-                  t = get(W + "action=expandtemplates&prop=wikitext&text=" + urllib.parse.quote(text))
-                  if t:
-                      out = json.loads(t).get("expandtemplates", {}).get("wikitext", "")
-                      print(f"--- {text}: {len(out)} chars\n{out[:1800]}")
+          t = get(W + "action=cargofields&table=Game_Supports")
+          if t: print(t[:3000])
+          t = get("https://umamusu.wiki/w/index.php?title=Special:CargoExport&tables=Game_Supports&fields=_pageName,support_id&format=json&limit=3")
+          if t: print(t[:1000])
+          ids = [30028, 30016, 30043, 30065, 30078, 20013, 20023, 10050]
+          text = "".join("@@%d@@{{#invoke:Game/Supports|bonusTable|%d}}{{#invoke:Game/Supports|supportLink|%d}}" % (i, i, i) for i in ids)
+          start_t = time.time()
+          t = get(W + "action=expandtemplates&prop=wikitext&text=" + urllib.parse.quote(text))
+          print("batch took", round(time.time() - start_t, 2), "s")
+          if t:
+              out = json.loads(t).get("expandtemplates", {}).get("wikitext", "")
+              for chunk in out.split("@@")[1:]:
+                  pass
+              # Print rows mentioning race/fan bonus and any cell with both a base and a unique value.
+              for part in re.split(r"@@(\d+)@@", out)[1:]:
+                  print("---", part[:300] if not part.strip().startswith("<table") else "")
+              for m in re.finditer(r"<tr><th><span class=\"tooltip\">(Race Bonus|Fan Bonus)<span.*?</tr>", out):
+                  print("ROW:", re.sub(r"<span class=\"text\">.*?</span>", "", m.group(0))[:400])
+              cells = sorted(set(re.findall(r"<td>([^<]*)</td>", out)))
+              print("distinct cell texts:", cells[:120])
+              print("headers:", sorted(set(re.findall(r"<th>(Lv\d+)</th>", out))))
