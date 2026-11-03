@@ -35,8 +35,9 @@ _TOOLTIP_TEXT = re.compile(r'<span class="text">.*?</span>', re.S)
 _TAG = re.compile(r"<[^>]+>")
 _LEVEL_HEADER = re.compile(r"<th>Lv(\d+)</th>")
 _CELL_VALUE = re.compile(r"^(-|[\d.]+)?\s*(?:\(\+([\d.]+)\))?$")
-_LINK = re.compile(r"Support Type ([^|\]]+?)\.png.*\[\[[^|\]]+\|((SSR|SR|R) (.+?))\]\]", re.S)
-_DISPLAY = re.compile(r"^\[(.+)\]\s+(.+)$")
+_LINK = re.compile(r"\[\[File:Support Type ([^|\]]+?)\.png[^\]]*\]\][^\[]*\[\[[^|\]]+\|((SSR|SR|R) (.+?))\]\]", re.S)
+_DISPLAY = re.compile(r"^\[(.+)\]\s*(.+)$")
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uff00-\uffef]")
 
 
 def _number(text: str) -> int | float:
@@ -79,11 +80,15 @@ def parse_support_link(markup: str) -> dict[str, str] | None:
     card_type, _, rarity, rest = match.groups()
     display = _DISPLAY.match(rest.strip())
     title, character = display.groups() if display else ("", rest.strip())
+    title = html.unescape(title).strip()
     return {
         "rarity": rarity,
         "type": card_type.strip(),
-        "title": html.unescape(title).strip(),
+        "title": title,
         "character": html.unescape(character).strip(),
+        # The wiki only falls back to the Japanese title when there's no English one,
+        # which means the card hasn't come out on the English (Global) server.
+        "jp_only": bool(_CJK.search(title)),
     }
 
 
@@ -125,11 +130,13 @@ def fetch_batch(ids: list[int]) -> dict[int, dict]:
     parts = re.split(r"@@(\d+)@@", output)[1:]
     cards = {}
     for card_id, markup in zip(parts[::2], parts[1::2]):
-        info = parse_support_link(markup)
-        if info is None or "<table" not in markup:
+        # The link follows the table; parse it separately, as effect names can mention "Support Type".
+        table, _, link = markup.rpartition("</table>")
+        info = parse_support_link(link)
+        if info is None or "<table" not in table:
             print(f"  skipping {card_id}: no wiki data", file=sys.stderr)
             continue
-        levels, effects = parse_bonus_table(markup)
+        levels, effects = parse_bonus_table(table)
         cards[int(card_id)] = {"id": int(card_id), **info, "levels": levels, "effects": effects}
     return cards
 
@@ -164,9 +171,12 @@ def check(data: dict) -> None:
     print(f"{len(cards)} cards, {len(with_fans)} with Fan Bonus")
     if len(cards) < 300 or len(with_fans) < 20:
         raise SystemExit("Too few cards parsed; not writing the file (the wiki's format may have changed).")
+    known_types = {"Speed", "Stamina", "Power", "Guts", "Wit", "Pal", "Group"}
     for card in cards:
         if len(card["levels"]) != 5:
             raise SystemExit(f"Card {card['id']} has {len(card['levels'])} levels instead of 5.")
+        if card["type"] not in known_types or not card["character"]:
+            raise SystemExit(f"Card {card['id']} has an unexpected type or name: {card}")
     best = sorted(with_fans, key=lambda c: c["effects"]["Fan Bonus"][4], reverse=True)[:10]
     for card in best:
         print(f"  {card['rarity']} [{card['title']}] {card['character']}: Fan Bonus {card['effects']['Fan Bonus']}")

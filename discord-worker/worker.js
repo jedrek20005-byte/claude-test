@@ -750,7 +750,7 @@ const token = new URLSearchParams(location.search).get("t");
 const api = "/cards/mine?t=" + encodeURIComponent(token);
 const RARITY = { SSR: 0, SR: 1, R: 2 };
 const TYPES = ["Speed", "Stamina", "Power", "Guts", "Wit", "Pal", "Group"];
-const FILTERS = [["mine", "★ Mine"], ["SSR", "SSR"], ["SR", "SR"], ["R", "R"], ...TYPES.map((t) => [t, t])];
+const FILTERS = [["mine", "★ Mine"], ["global", "Hide JP-only"], ["SSR", "SSR"], ["SR", "SR"], ["R", "R"], ...TYPES.map((t) => [t, t])];
 const $ = (id) => document.getElementById(id);
 let cards = [], owned = {}, active = new Set(), current = null, saveTimer = null;
 
@@ -761,6 +761,7 @@ function matches(card) {
   const q = $("q").value.trim().toLowerCase();
   if (q && !(card.character + " " + card.title).toLowerCase().includes(q)) return false;
   if (active.has("mine") && !(card.id in owned)) return false;
+  if (active.has("global") && card.jp_only) return false;
   const rarities = ["SSR", "SR", "R"].filter((r) => active.has(r));
   if (rarities.length && !rarities.includes(card.rarity)) return false;
   const types = TYPES.filter((t) => active.has(t));
@@ -775,7 +776,7 @@ function tile(card) {
   img.loading = "lazy"; img.alt = ""; img.referrerPolicy = "no-referrer";
   img.src = "https://umamusu.wiki/Special:FilePath/Support_Card_" + card.id + "_Icon.png?width=128";
   img.onerror = () => img.remove();
-  const tag = document.createElement("span"); tag.className = "tag"; tag.textContent = card.rarity + " · " + card.type;
+  const tag = document.createElement("span"); tag.className = "tag"; tag.textContent = card.rarity + " · " + card.type + (card.jp_only ? " · JP" : "");
   const name = document.createElement("span"); name.className = "name"; name.textContent = card.character;
   const title = document.createElement("span"); title.className = "title"; title.textContent = card.title;
   b.append(tag, img, name, title);
@@ -843,7 +844,8 @@ $("filters").replaceChildren(...FILTERS.map(([key, label]) => {
     const [data, mine] = await Promise.all([fetch(DATA_URL).then((r) => r.json()), fetch(api).then((r) => r.json())]);
     if (mine.error) throw new Error(mine.error);
     owned = mine.cards || {};
-    cards = data.cards.sort((a, b) => (RARITY[a.rarity] - RARITY[b.rarity]) || (b.id - a.id));
+    // Cards on the English server first (JP-only ones are tagged), then by rarity, newest first.
+    cards = data.cards.sort((a, b) => (a.jp_only - b.jp_only) || (RARITY[a.rarity] - RARITY[b.rarity]) || (b.id - a.id));
     status(Object.keys(owned).length + " cards");
     render();
   } catch (err) { status(String(err.message || err)); }

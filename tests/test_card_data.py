@@ -58,6 +58,7 @@ def test_parse_support_link():
         "type": "Guts",
         "title": "The Brightest Star in Japan!",
         "character": "Special Week",
+        "jp_only": False,
     }
     tricky = SUPPORT_LINK.replace("The Brightest Star in Japan!", "Run(my)way").replace("Special Week", "Gold City")
     assert parse_support_link(tricky)["title"] == "Run(my)way"
@@ -75,3 +76,27 @@ def test_to_json_is_valid_and_line_per_card():
     lines = text.splitlines()
     assert any(line.strip().startswith('"generated"') for line in lines)
     assert sum('"id"' in line for line in lines) == 2
+
+
+def test_parse_support_link_edge_cases_from_real_cards():
+    # A JP-only group card: Japanese title and no space before the name.
+    jp = SUPPORT_LINK.replace("Guts", "Group").replace("[The Brightest Star in Japan!] Special Week", "[この先も！]刻み続ける者たち")
+    info = parse_support_link(jp)
+    assert info["title"] == "この先も！" and info["character"] == "刻み続ける者たち"
+    assert info["type"] == "Group" and info["jp_only"] is True
+
+
+def test_fetch_batch_ignores_support_type_in_effect_names(monkeypatch):
+    import json
+
+    from tools import build_card_data
+
+    unique_row = (
+        '<tr><th><span class="tooltip">Unique: Starting Stats for Every Support Type in Deck'
+        '<span class="text">x</span></span></th>' + "<td>(+10)</td>" * 5 + "</tr></table>"
+    )
+    markup = "@@30090@@" + BONUS_TABLE.replace("</table>", unique_row) + SUPPORT_LINK
+    monkeypatch.setattr(build_card_data, "_get", lambda *a, **k: json.dumps({"expandtemplates": {"wikitext": markup}}).encode())
+    card = build_card_data.fetch_batch([30090])[30090]
+    assert card["type"] == "Guts"
+    assert card["effects"]["Unique: Starting Stats for Every Support Type in Deck"] == [10] * 5
