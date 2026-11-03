@@ -1,16 +1,16 @@
-// The Umamusume Discord app as a Cloudflare Worker: /uma, the daily picture,
-// and commands to set where and when the daily picture is posted.
+// The Umamusume Discord app as a Cloudflare Worker: /uma, scheduled pictures
+// (daily or every few hours), and commands to set where and when they're posted.
 //
 // Discord sends each command to this Worker over HTTPS ("interactions
-// endpoint"), and a cron trigger wakes it up to post the daily picture, so
+// endpoint"), and a cron trigger wakes it up to post scheduled pictures, so
 // there's no bot process to keep online. Setup steps: README, "Slash commands
 // without a computer".
 //
 // Worker → Settings:
 //   Secret DISCORD_PUBLIC_KEY  Developer Portal → your app → General Information → Public Key
 //   Secret DISCORD_TOKEN       Developer Portal → your app → Bot → Reset Token
-//   KV namespace binding UMA_STATE   stores the settings and post history (needed for the daily picture)
-//   Cron trigger */5 * * * *         checks every 5 minutes whether it's time for the daily picture
+//   KV namespace binding UMA_STATE   stores the settings and post history (needed for scheduled pictures)
+//   Cron trigger */5 * * * *         checks every 5 minutes whether it's time to post
 
 const API = "https://discord.com/api/v10";
 const USER_AGENT = "UmamusumeDailyBot/1.0 (+https://github.com/jedrek20005-byte/claude-test)";
@@ -19,10 +19,11 @@ const EMBED_COLOR = 0x5fbf6e;
 const ALLOWED_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
 const GENERAL = 0;
 const UNKNOWN = 9;
-const DAILY_TITLE = "🐴 Umamusume of the Day";
 const RANDOM_TITLE = "🐴 Random Umamusume";
 const RETRY_AFTER_MS = 30 * 60 * 1000;
-const HISTORY_LENGTH = 2000;
+// Keys and hashes of posted pictures: about four months of hourly posts.
+const HISTORY_LENGTH = 6000;
+export const EVERY_HOURS = [1, 2, 3, 4, 6, 8, 12, 24];
 // View Channel + Send Messages + Embed Links + Attach Files
 const BOT_PERMISSIONS = "52224";
 const BOT_USER_AGENT = "DiscordBot (https://github.com/jedrek20005-byte/claude-test, 1.0)";
@@ -32,7 +33,8 @@ const DEFAULT_SETTINGS = {
   channelId: null,
   time: "12:00",
   timeZone: "UTC",
-  lastDaily: null, // local date of the last daily picture
+  everyHours: 24,
+  lastPost: null, // local date and time of the last scheduled picture, like "2026-11-03 09:00"
   lastError: null,
   retryAfter: 0,
 };
@@ -50,10 +52,28 @@ const ADMIN_ONLY = { default_member_permissions: "32", contexts: [0] };
 
 const COMMANDS = [
   { name: "uma", description: "Post a random SFW Umamusume picture", type: 1 },
-  { name: "uma_here", description: "Post the daily Umamusume picture in this channel", type: 1, ...ADMIN_ONLY },
+  { name: "uma_here", description: "Post the scheduled Umamusume pictures in this channel", type: 1, ...ADMIN_ONLY },
+  {
+    name: "uma_every",
+    description: "Set how often a picture is posted",
+    type: 1,
+    ...ADMIN_ONLY,
+    options: [
+      {
+        type: 4,
+        name: "hours",
+        description: "How often to post",
+        required: true,
+        choices: EVERY_HOURS.map((hours) => ({
+          name: hours === 24 ? "Once a day" : hours === 1 ? "Every hour" : `Every ${hours} hours`,
+          value: hours,
+        })),
+      },
+    ],
+  },
   {
     name: "uma_time",
-    description: "Set what time the daily picture is posted",
+    description: "Set what time pictures are posted (for hourly posts, the minute)",
     type: 1,
     ...ADMIN_ONLY,
     options: [
@@ -67,8 +87,8 @@ const COMMANDS = [
       },
     ],
   },
-  { name: "uma_off", description: "Stop posting the daily picture", type: 1, ...ADMIN_ONLY },
-  { name: "uma_status", description: "Show the daily picture settings", type: 1, ...ADMIN_ONLY },
+  { name: "uma_off", description: "Stop posting scheduled pictures", type: 1, ...ADMIN_ONLY },
+  { name: "uma_status", description: "Show the scheduled picture settings", type: 1, ...ADMIN_ONLY },
 ];
 
 // Same list as DEFAULT_BLACKLIST in umabot/config.py; * is a wildcard.
@@ -121,7 +141,7 @@ export default {
   },
 
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(runDaily(env, new Date(controller.scheduledTime)));
+    ctx.waitUntil(runSchedule(env, new Date(controller.scheduledTime)));
   },
 };
 
@@ -190,7 +210,7 @@ async function registerPage(env) {
       `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">` +
         `<body style="font:18px sans-serif;padding:16px;line-height:1.5">` +
         `<p>✅ The commands are registered for <b>${escapeHtml(app.name)}</b>.</p>` +
-        `<p>Next, add it to your server (this also lets it post the daily picture):</p>` +
+        `<p>Next, add it to your server (this also lets it post scheduled pictures):</p>` +
         `<p><a href="${inviteLink(app.id)}" style="font-size:22px">Add to Discord</a></p></body>`,
       { headers: { "Content-Type": "text/html; charset=utf-8" } },
     );
@@ -206,7 +226,7 @@ function statusPage(env) {
     "",
     check("DISCORD_PUBLIC_KEY"),
     check("DISCORD_TOKEN"),
-    check("UMA_STATE") + (env.UMA_STATE ? "" : " (a KV namespace binding, needed for the daily picture)"),
+    check("UMA_STATE") + (env.UMA_STATE ? "" : " (a KV namespace binding, needed for scheduled pictures)"),
     "",
     "Open /register on this address to register the commands and get the invite link.",
   ].join("\n");
@@ -305,7 +325,44 @@ export function localNow(date, timeZone) {
   return { day: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
 }
 
-const schedule = (settings) => `**${settings.time}** (${settings.timeZone})`;
+const toMinutes = (time) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
+const fromMinutes = (minutes) =>
+  `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+
+// The day's post times: the set time, then every `everyHours` hours around the clock.
+export function postTimes(settings) {
+  const step = settings.everyHours * 60;
+  const times = [];
+  for (let minutes = toMinutes(settings.time) % step; minutes < 24 * 60; minutes += step) {
+    times.push(fromMinutes(minutes));
+  }
+  return times;
+}
+
+// The latest post time that has passed today, like "2026-11-03 09:00" (null before the first one).
+function dueSlot(settings, local) {
+  const passed = postTimes(settings).filter((time) => time <= local.time);
+  return passed.length ? `${local.day} ${passed[passed.length - 1]}` : null;
+}
+
+export function describeSchedule(settings) {
+  const zone = `(${settings.timeZone})`;
+  if (settings.everyHours === 24) return `every day at **${settings.time}** ${zone}`;
+  if (settings.everyHours === 1) return `every hour at **:${settings.time.slice(3)}** ${zone}`;
+  const times = postTimes(settings);
+  const list = times.length <= 4 ? times.join(", ") : `${times.slice(0, 3).join(", ")}…`;
+  return `every ${settings.everyHours} hours, at **${list}** ${zone}`;
+}
+
+const scheduledTitle = (everyHours) =>
+  everyHours === 24 ? "🐴 Umamusume of the Day" : everyHours === 1 ? "🐴 Umamusume of the Hour" : "🐴 Umamusume Time!";
+
+const optionValues = (interaction) =>
+  Object.fromEntries((interaction.data.options || []).map((option) => [option.name, option.value]));
+
+function withChannelHint(text, settings) {
+  return settings.enabled && settings.channelId ? text : `${text}\nNow use \`/uma_here\` in the channel where I should post!`;
+}
 
 const COMMAND_HANDLERS = {
   uma(interaction, env, ctx) {
@@ -322,7 +379,7 @@ const COMMAND_HANDLERS = {
 
   async uma_time(interaction, env) {
     if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
-    const options = Object.fromEntries((interaction.data.options || []).map((option) => [option.name, option.value]));
+    const options = optionValues(interaction);
     const time = parseTime(options.time);
     if (!time) {
       return reply("Hmm… I didn't understand that time. Please write it like `09:00` or `21:30`!", { ephemeral: true });
@@ -332,27 +389,33 @@ const COMMAND_HANDLERS = {
     }
     const change = options.timezone ? { time, timeZone: options.timezone } : { time };
     const settings = await updateGuild(env, interaction.guild_id, change);
-    let text = `Got it! I'll post a new picture every day at ${schedule(settings)} 💚`;
-    if (!settings.enabled || !settings.channelId) {
-      text += "\nNow use `/uma_here` in the channel where I should post!";
+    return reply(withChannelHint(`Got it! I'll post a new picture ${describeSchedule(settings)} 💚`, settings));
+  },
+
+  async uma_every(interaction, env) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    const hours = Number(optionValues(interaction).hours);
+    if (!EVERY_HOURS.includes(hours)) {
+      return reply("Please pick one of the choices from the list!", { ephemeral: true });
     }
-    return reply(text);
+    const settings = await updateGuild(env, interaction.guild_id, { everyHours: hours });
+    return reply(withChannelHint(`Okay! I'll post a new picture ${describeSchedule(settings)} 💚`, settings));
   },
 
   async uma_off(interaction, env) {
     if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
     await updateGuild(env, interaction.guild_id, { enabled: false });
-    return reply("Okay, I'll take a little break from the daily picture. Use `/uma_here` to start again! 💚");
+    return reply("Okay, I'll take a little break from posting pictures. Use `/uma_here` to start again! 💚");
   },
 
   async uma_status(interaction, env) {
     if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
     const settings = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
     const lines = [
-      `📅 Daily picture: ${settings.enabled && settings.channelId ? "on" : "off"}`,
+      `📅 Scheduled pictures: ${settings.enabled && settings.channelId ? "on" : "off"}`,
       `📍 Channel: ${settings.channelId ? `<#${settings.channelId}>` : "not set (use `/uma_here`)"}`,
-      `⏰ Time: ${schedule(settings)}`,
-      `🖼️ Last daily picture: ${settings.lastDaily || "not yet"}`,
+      `⏰ Schedule: ${describeSchedule(settings)}`,
+      `🖼️ Last picture: ${settings.lastPost || "not yet"}`,
     ];
     if (settings.lastError) {
       lines.push(`⚠️ Last problem: ${settings.lastError.slice(0, 300)}`);
@@ -378,8 +441,8 @@ async function useThisChannel(interaction, env) {
       channelId, enabled: true, lastError: null, retryAfter: 0,
     });
     await sendToDiscord(editUrl, "PATCH", {}, {
-      content: `Yay! From now on I'll post a picture here every day at ${schedule(settings)} 💚\n` +
-        "Use `/uma_time` to change the time.",
+      content: `Yay! From now on I'll post a picture here ${describeSchedule(settings)} 💚\n` +
+        "Use `/uma_every` to change how often, and `/uma_time` to change the time.",
     });
   } catch (err) {
     console.error(err);
@@ -387,30 +450,31 @@ async function useThisChannel(interaction, env) {
   }
 }
 
-// ---- Daily picture ---------------------------------------------------------
+// ---- Scheduled pictures ----------------------------------------------------
 
-// Runs from the cron trigger: posts in every server whose time has come and
-// that hasn't had today's picture yet. A failed post is retried 30 minutes later.
-export async function runDaily(env, now = new Date()) {
+// Runs from the cron trigger: posts in every server whose next post time has
+// passed and that hasn't had that picture yet. A failed post is retried 30 minutes later.
+export async function runSchedule(env, now = new Date()) {
   if (!env.UMA_STATE || !env.DISCORD_TOKEN) return;
   const updates = {};
   for (const [guildId, stored] of Object.entries(await loadGuilds(env))) {
     const settings = { ...DEFAULT_SETTINGS, ...stored };
-    const local = localNow(now, settings.timeZone);
+    const slot = dueSlot(settings, localNow(now, settings.timeZone));
     if (
-      !settings.enabled || !settings.channelId || settings.lastDaily === local.day ||
-      local.time < settings.time || now.getTime() < settings.retryAfter
+      !settings.enabled || !settings.channelId || !slot || settings.lastPost === slot ||
+      now.getTime() < settings.retryAfter
     ) {
       continue;
     }
     try {
       const image = await pickImage(SOURCES, await loadSeen(env));
       if (!image) throw new Error("None of the image sites returned a picture.");
-      await deliver(`${API}/channels/${settings.channelId}/messages`, "POST", botHeaders(env), image, DAILY_TITLE);
+      const url = `${API}/channels/${settings.channelId}/messages`;
+      await deliver(url, "POST", botHeaders(env), image, scheduledTitle(settings.everyHours));
       await remember(env, image);
-      updates[guildId] = { lastDaily: local.day, lastError: null, retryAfter: 0 };
+      updates[guildId] = { lastPost: slot, lastError: null, retryAfter: 0 };
     } catch (err) {
-      console.error(`Daily picture for server ${guildId} failed: ${err.message}`);
+      console.error(`Scheduled picture for server ${guildId} failed: ${err.message}`);
       updates[guildId] = { lastError: err.message, retryAfter: now.getTime() + RETRY_AFTER_MS };
     }
   }
@@ -516,7 +580,7 @@ const absolute = (url) => (url ? (url.startsWith("//") ? `https:${url}` : url) :
 export const SOURCES = [
   {
     name: "Danbooru",
-    pages: 20,
+    pages: 100,
     async fetchPage(page) {
       // Anonymous Danbooru searches allow two tags: the franchise and the rating.
       const query = new URLSearchParams({ tags: "umamusume rating:g", limit: "50", page: String(page + 1) });
@@ -541,7 +605,7 @@ export const SOURCES = [
   },
   {
     name: "Safebooru",
-    pages: 20,
+    pages: 100,
     async fetchPage(page) {
       const query = new URLSearchParams({
         page: "dapi", s: "post", q: "index", json: "1", tags: "umamusume", limit: "50", pid: String(page),
@@ -577,7 +641,7 @@ export const SOURCES = [
   },
   {
     name: "Konachan",
-    pages: 10,
+    pages: 20,
     async fetchPage(page) {
       const query = new URLSearchParams({ tags: "uma_musume_pretty_derby", limit: "50", page: String(page + 1) });
       const posts = await getJson(`https://konachan.net/post.json?${query}`);
@@ -618,8 +682,8 @@ function shuffled(items) {
 
 export async function pickImage(sources = SOURCES, seen = new Set()) {
   for (const source of shuffled(sources)) {
-    // A random page for variety; page 0 as a fallback if that one is past the end.
-    for (const page of new Set([randomInt(source.pages), 0])) {
+    // Random pages for variety; page 0 as a fallback in case they're past the end.
+    for (const page of new Set([randomInt(source.pages), randomInt(source.pages), 0])) {
       let posts;
       try {
         posts = await source.fetchPage(page);

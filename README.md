@@ -45,12 +45,13 @@ After a successful post, the workflow commits the post history to `state/history
 | Command | Who sees it | What it does |
 | --- | --- | --- |
 | `/uma` | everyone | posts a random SFW picture right away |
-| `/uma_here` | Manage Server | posts the daily picture in this channel (and turns it on) |
-| `/uma_time time:09:00 timezone:Europe/Warsaw` | Manage Server | sets the daily time; the time zone is picked from a list |
-| `/uma_off` | Manage Server | pauses the daily picture (`/uma_here` turns it back on) |
-| `/uma_status` | Manage Server | shows the channel, time, last post and last problem |
+| `/uma_here` | Manage Server | posts the scheduled pictures in this channel (and turns them on) |
+| `/uma_every hours:Every hour` | Manage Server | how often: every 1, 2, 3, 4, 6, 8 or 12 hours, or once a day (the default) |
+| `/uma_time time:09:00 timezone:Europe/Warsaw` | Manage Server | what time to post (for hourly posts, the minute); the time zone is picked from a list |
+| `/uma_off` | Manage Server | pauses scheduled pictures (`/uma_here` turns them back on) |
+| `/uma_status` | Manage Server | shows the channel, schedule, last post and last problem |
 
-The daily picture comes from the app itself, within 5 minutes of the set time. Pictures don't repeat: the post history is kept in Cloudflare KV. If posting fails, the Worker tries again 30 minutes later.
+Scheduled pictures come from the app itself, within 5 minutes of each post time. Pictures don't repeat: the post history is kept in Cloudflare KV. If posting fails, the Worker tries again 30 minutes later.
 
 Every step below works in a phone browser; switch to "desktop site" if a page looks cut off.
 
@@ -67,7 +68,7 @@ Every step below works in a phone browser; switch to "desktop site" if a page lo
 5. **Add the timer:** Worker → **Settings** → **Trigger events** (or **Triggers**) → **Add** → **Cron trigger** → every 5 minutes (`*/5 * * * *`).
 6. **Register the commands:** open the Worker's address with `/register` on the end, e.g. `https://NAME.YOUR-NAME.workers.dev/register`. Then tap **Add to Discord** and pick your server. This adds the app as a bot so it can post the daily picture.
 7. **Point Discord at the Worker:** Developer Portal → **General Information** → **Interactions Endpoint URL**, paste the Worker's address (without `/register`) → **Save Changes**. Reload the page to check it stayed.
-8. **Set it up in Discord:** run `/uma_here` in the channel for the daily picture, then `/uma_time`.
+8. **Set it up in Discord:** run `/uma_here` in the channel for the pictures, then `/uma_every` and `/uma_time`.
 
 Opening the Worker's plain address shows whether the keys and storage are set up. If you used the GitHub Actions daily post before, turn it off (Actions → **Daily Umamusume picture** → **⋯** → **Disable workflow**) so the picture isn't posted twice.
 
