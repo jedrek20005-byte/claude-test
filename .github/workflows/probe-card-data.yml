@@ -43,18 +43,24 @@ jobs:
                   print(json.dumps(data, ensure_ascii=False)[:limit])
               return data
 
-          # Round 2: how the wiki reads support card effects, and where its game data lives.
-          for page in ("Module:Game/Supports/Data/Leveled", "Module:Game/Supports/Data/Unique", "Module:Game"):
-              t = get(f"https://umamusu.wiki/{page}?action=raw")
-              if t: print(t[:6000])
-          t = get("https://gitlab.com/api/v4/groups/umamusume-wiki/projects?per_page=50&include_subgroups=true")
+          # Round 3: find something that already outputs card effects, and the master data's origin.
+          import urllib.parse
+          W = "https://umamusu.wiki/w/api.php?format=json&"
+          t = get("https://gitlab.com/api/v4/projects/umamusume-wiki%2Flua-modules/repository/tree?recursive=true&per_page=100")
           if t:
-              try:
-                  for proj in json.loads(t):
-                      print("-", proj.get("path_with_namespace"), "|", (proj.get("description") or "")[:150], "|", proj.get("web_url"))
-              except Exception as e:
-                  print("bad json", e, t[:300])
-          for api in ("https://umamusu.wiki/w/api.php?action=query&meta=siteinfo&format=json",
-                      "https://umamusu.wiki/api.php?action=query&meta=siteinfo&format=json"):
-              t = get(api)
-              if t: print(t[:800])
+              paths = [x["path"] for x in json.loads(t)]
+              print("lua-modules files:", [p for p in paths if "upport" in p or "ffect" in p or "json" in p.lower()])
+          t = get("https://gitlab.com/api/v4/projects/umamusume-wiki%2Fdocker-umamusu-wiki/repository/tree?recursive=true&per_page=100")
+          if t:
+              paths = [x["path"] for x in json.loads(t)]
+              print("docker files:", paths[:100])
+              for path in paths:
+                  if any(k in path.lower() for k in ("master", "sync", "update", "fetch", "download")) and not path.endswith("/"):
+                      raw = get("https://gitlab.com/umamusume-wiki/docker-umamusu-wiki/-/raw/main/" + urllib.parse.quote(path))
+                      if raw: print(raw[:2500])
+          t = get("https://umamusu.wiki/Module:Game/Supports/Data/Effects?action=raw")
+          if t: print(t[:5000])
+          t = get(W + "action=query&list=search&srlimit=5&srwhat=title&srsearch=" + urllib.parse.quote("Kitasan Black"))
+          if t: print(t[:1500])
+          t = get(W + "action=query&list=search&srlimit=5&srsearch=" + urllib.parse.quote("Fan Bonus support card"))
+          if t: print(t[:1500])
