@@ -1,0 +1,43 @@
+name: Update support card data
+
+# Rebuilds card-data/support-cards.json (used by the /uma_deck command) from
+# the Umamusume Wiki's game data. Runs weekly, or by hand after a new banner.
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-card-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build the card data
+        run: python -m tools.build_card_data --out card-data/support-cards.json
+
+      - name: Save it
+        run: |
+          git add card-data/support-cards.json
+          # The timestamp alone changing isn't worth a commit.
+          if git diff --cached --quiet -I '"generated"'; then
+            echo "No card changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update support card data"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
