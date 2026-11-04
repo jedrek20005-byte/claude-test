@@ -92,9 +92,9 @@ test("answers Discord's ping and registers /uma", async () => {
   assert.equal(put.init.headers.Authorization, "Bot bot-token");
   const commands = JSON.parse(put.init.body);
   assert.deepEqual(commands.map((c) => c.name), [
-    "uma", "uma_here", "uma_every", "uma_time", "uma_off", "uma_status", "uma_cards", "uma_deck",
+    "uma", "uma_here", "uma_every", "uma_time", "uma_off", "uma_status", "uma_say", "uma_cards", "uma_deck",
   ]);
-  for (const command of commands.slice(1, 6)) {
+  for (const command of commands.slice(1, 7)) {
     assert.equal(command.default_member_permissions, "32"); // Manage Server
     assert.deepEqual(command.contexts, [0]); // servers only
   }
@@ -514,4 +514,62 @@ test("/uma_deck builds a deck from the saved cards", async () => {
 test("/uma_deck without saved cards points to /uma_cards", async () => {
   await run(await signedRequest(asUser("uma_deck")), { ...ENV, UMA_STATE: fakeKV() });
   assert.match(JSON.parse(editCalls()[0].init.body).content, /uma_cards/);
+});
+
+// ---- /uma_say ------------------------------------------------------------------
+
+const sentMessages = () => calls.filter((c) => /\/channels\/\d+\/messages$/.test(c.url) && c.init.method === "POST");
+
+test("/uma_say with a message posts it as the app, privately confirming", async () => {
+  const response = await run(await signedRequest(asUser("uma_say", [{ name: "message", value: "Hello @everyone!" }])));
+  assert.deepEqual(await response.json(), { type: 5, data: { flags: 64 } });
+  const [sent] = sentMessages();
+  assert.ok(sent.url.endsWith("/channels/555/messages"));
+  assert.equal(sent.init.headers.Authorization, "Bot bot-token");
+  assert.deepEqual(JSON.parse(sent.init.body), { content: "Hello @everyone!", allowed_mentions: { parse: ["users"] } });
+  assert.match(JSON.parse(editCalls()[0].init.body).content, /Sent in <#555>/);
+});
+
+test("/uma_say can post in another channel", async () => {
+  const options = [{ name: "message", value: "News!" }, { name: "channel", value: "999" }];
+  await run(await signedRequest(asUser("uma_say", options)));
+  assert.ok(sentMessages()[0].url.endsWith("/channels/999/messages"));
+});
+
+test("/uma_say without a message opens a box, and its answer gets posted", async () => {
+  const opened = await (await run(await signedRequest(asUser("uma_say", [{ name: "channel", value: "999" }])))).json();
+  assert.equal(opened.type, 9);
+  assert.match(opened.data.custom_id, /^uma_say:999:[\w-]{22}$/);
+  assert.equal(opened.data.components[0].components[0].style, 2); // multi-line
+  assert.equal(sentMessages().length, 0);
+
+  const submit = {
+    type: 5, application_id: "4242", token: "interaction-token", guild_id: "777", channel_id: "555",
+    member: { user: { id: "123456789" } },
+    data: { custom_id: opened.data.custom_id, components: [{ type: 1, components: [{ custom_id: "text", value: "Line 1\nLine 2" }] }] },
+  };
+  assert.deepEqual(await (await run(await signedRequest(submit))).json(), { type: 5, data: { flags: 64 } });
+  const [sent] = sentMessages();
+  assert.ok(sent.url.endsWith("/channels/999/messages"));
+  assert.equal(JSON.parse(sent.init.body).content, "Line 1\nLine 2");
+
+  // A box for someone else, or a changed channel, isn't accepted.
+  calls = [];
+  for (const forged of [
+    { ...submit, member: { user: { id: "1" } } },
+    { ...submit, data: { ...submit.data, custom_id: opened.data.custom_id.replace(":999:", ":888:") } },
+  ]) {
+    await run(await signedRequest(forged));
+  }
+  assert.equal(sentMessages().length, 0);
+  assert.match(JSON.parse(editCalls()[0].init.body).content, /didn't come from/);
+});
+
+test("/uma_say explains when it can't post in the channel", async () => {
+  routes["discord.com"] = (url, init) =>
+    url.endsWith("/messages") && init.method === "POST"
+      ? Response.json({ message: "Missing Permissions" }, { status: 403 })
+      : new Response(null);
+  await run(await signedRequest(asUser("uma_say", [{ name: "message", value: "hi" }])));
+  assert.match(JSON.parse(editCalls()[0].init.body).content, /can't send messages in <#555>/);
 });

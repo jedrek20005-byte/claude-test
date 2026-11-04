@@ -32,4 +32,15 @@ jobs:
             echo "::warning::Add the CLOUDFLARE_API_TOKEN secret to deploy the Worker automatically (see README)."
             [ "$GITHUB_EVENT_NAME" = "push" ] && exit 0 || exit 1
           fi
-          npx --yes wrangler@4 deploy
+          set -o pipefail
+          npx --yes wrangler@4 deploy | tee deploy.log
+          # Register the slash commands, so new or changed ones show up in Discord.
+          url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          if [ -n "$url" ]; then
+            sleep 20  # give the new version a moment to reach Cloudflare's servers
+            if curl -fsS "$url/register" | grep -q "registered"; then
+              echo "Slash commands registered."
+            else
+              echo "::warning::Couldn't register the slash commands; open $url/register"
+            fi
+          fi

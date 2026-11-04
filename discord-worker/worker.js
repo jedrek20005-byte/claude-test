@@ -89,6 +89,22 @@ const COMMANDS = [
   },
   { name: "uma_off", description: "Stop posting scheduled pictures", type: 1, ...ADMIN_ONLY },
   { name: "uma_status", description: "Show the scheduled picture settings", type: 1, ...ADMIN_ONLY },
+  {
+    name: "uma_say",
+    description: "Make me send a message (leave it empty for a longer, multi-line one)",
+    type: 1,
+    ...ADMIN_ONLY,
+    options: [
+      { type: 3, name: "message", description: "What to say", required: false, max_length: 2000 },
+      {
+        type: 7,
+        name: "channel",
+        description: "Where to send it (this channel if left empty)",
+        required: false,
+        channel_types: [0, 5, 10, 11, 12], // text, announcement and thread channels
+      },
+    ],
+  },
   { name: "uma_cards", description: "Pick the support cards you own (for /uma_deck)", type: 1 },
   {
     name: "uma_deck",
@@ -156,6 +172,10 @@ export default {
       // a good moment to make sure the commands are registered.
       ctx.waitUntil(registerCommands(env).catch((err) => console.error(err.message)));
       return jsonResponse({ type: 1 });
+    }
+    if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("uma_say:")) {
+      ctx.waitUntil(sayFromModal(interaction, env));
+      return jsonResponse({ type: 5, data: { flags: 64 } });
     }
     const handler = interaction.type === 2 && COMMAND_HANDLERS[interaction.data?.name];
     if (handler) {
@@ -432,6 +452,32 @@ const COMMAND_HANDLERS = {
     return reply("Okay, I'll take a little break from posting pictures. Use `/uma_here` to start again! 💚");
   },
 
+  async uma_say(interaction, env, ctx) {
+    const options = optionValues(interaction);
+    const channelId = options.channel || interaction.channel_id;
+    if (options.message) {
+      ctx.waitUntil(say(interaction, env, channelId, options.message));
+      return jsonResponse({ type: 5, data: { flags: 64 } });
+    }
+    // No text given: open a box for a longer message. The signature in the
+    // custom_id ties the box to this person and channel.
+    const signature = await sign(env, `uma-say:${userOf(interaction).id}:${channelId}`);
+    return jsonResponse({
+      type: 9,
+      data: {
+        custom_id: `uma_say:${channelId}:${signature}`,
+        title: "Send a message as me 💚",
+        components: [{
+          type: 1,
+          components: [{
+            type: 4, custom_id: "text", label: "Message", style: 2,
+            min_length: 1, max_length: 2000, required: true, placeholder: "Good morning, trainers! 💚",
+          }],
+        }],
+      },
+    });
+  },
+
   async uma_cards(interaction, env, ctx, origin) {
     if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
     if (!env.DISCORD_TOKEN) return reply("The Worker needs its DISCORD_TOKEN secret first.", { ephemeral: true });
@@ -537,6 +583,47 @@ export async function runSchedule(env, now = new Date()) {
   }
 }
 
+// ---- Messages as the app (/uma_say) ------------------------------------------
+
+async function sign(env, text) {
+  const signature = await crypto.subtle.sign("HMAC", await linkKey(env), new TextEncoder().encode(text));
+  return toBase64Url(signature).slice(0, 22);
+}
+
+async function sayFromModal(interaction, env) {
+  const [, channelId, signature] = interaction.data.custom_id.split(":");
+  const text = interaction.data.components?.[0]?.components?.[0]?.value;
+  const expected = await sign(env, `uma-say:${userOf(interaction).id}:${channelId}`);
+  if (signature !== expected || !text) {
+    const editUrl = `${API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+    await sendToDiscord(editUrl, "PATCH", {}, { content: "That message box didn't come from `/uma_say`, so I didn't send it." });
+    return;
+  }
+  await say(interaction, env, channelId, text);
+}
+
+// Posts as a normal message from the app (no "used /uma_say" line), never pinging @everyone, @here or roles.
+async function say(interaction, env, channelId, text) {
+  const editUrl = `${API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+  let result;
+  try {
+    const res = await fetch(`${API}/channels/${channelId}/messages`, {
+      method: "POST",
+      headers: { ...botHeaders(env), "Content-Type": "application/json" },
+      body: JSON.stringify({ content: text, allowed_mentions: { parse: ["users"] } }),
+    });
+    result = res.ok
+      ? `Sent in <#${channelId}> 💚`
+      : res.status === 403 || res.status === 404
+        ? `I can't send messages in <#${channelId}>… Please let me see the channel and send messages there.`
+        : `Discord didn't accept that message (HTTP ${res.status}).`;
+  } catch (err) {
+    console.error(err);
+    result = "Something went wrong, sorry.";
+  }
+  await sendToDiscord(editUrl, "PATCH", {}, { content: result }).catch(() => {});
+}
+
 // ---- Deck builder ----------------------------------------------------------
 
 // Built weekly from the Umamusume Wiki by .github/workflows/update-card-data.yml.
@@ -640,6 +727,7 @@ async function answerDeck(interaction, env) {
 
 // Card box links: "<user id>.<expiry>.<signature>", signed with a key derived
 // from DISCORD_TOKEN, so only the person who ran /uma_cards can edit their list.
+// The same key signs /uma_say message boxes.
 async function linkKey(env) {
   const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`uma-cards:${env.DISCORD_TOKEN}`));
   return crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);

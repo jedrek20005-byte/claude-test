@@ -50,6 +50,7 @@ After a successful post, the workflow commits the post history to `state/history
 | `/uma_time time:09:00 timezone:Europe/Warsaw` | Manage Server | what time to post (for hourly posts, the minute); the time zone is picked from a list |
 | `/uma_off` | Manage Server | pauses scheduled pictures (`/uma_here` turns them back on) |
 | `/uma_status` | Manage Server | shows the channel, schedule, last post and last problem |
+| `/uma_say message:Hi!` | Manage Server | posts the message as the app (leave `message` empty for a multi-line box; `channel:` posts elsewhere; never pings @everyone, @here or roles) |
 | `/uma_cards` | everyone | private link to your card box: tap the support cards you own and pick their limit break |
 | `/uma_deck goal:Most fans` | everyone | builds your best 5-card deck from your cards (goals: **Most fans**, **Race bonus**) |
 
