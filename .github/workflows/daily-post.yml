@@ -1,11 +1,10 @@
 name: Daily Umamusume picture
 
 on:
-  schedule:
-    # Runs every hour; the bot itself only posts once POST_TIME has passed in
-    # TIMEZONE (daylight saving included) and only once per day. Hourly runs
-    # also retry automatically if every image site was down.
-    - cron: "17 * * * *"
+  # Scheduled posting now runs in the Cloudflare Worker (/uma_here, /uma_every).
+  # To post through a webhook from GitHub instead, add this back:
+  #   schedule:
+  #     - cron: "17 * * * *"  # hourly; posts once POST_TIME has passed, once per day
   workflow_dispatch:
     inputs:
       action:

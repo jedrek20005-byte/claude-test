@@ -66,8 +66,16 @@ jobs:
           status, _, body = call(url)
           cards = json.loads(body)["cards"] if status == 200 else []
           check("Card data loads", status == 200 and len(cards) > 300, f"{len(cards)} cards")
-          status, kind, _ = call("https://umamusu.wiki/Special:FilePath/Support_Card_30028_Icon.png?width=128")
+          browser = {"User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36"}
+          status, kind, _ = call("https://umamusu.wiki/Special:FilePath/Support_Card_30028_Icon.png?width=128", headers=browser)
           check("Card pictures load", status == 200 and kind.startswith("image/"), f"HTTP {status} {kind}")
+          status, _, body = call("https://umamusu.wiki/w/api.php?action=query&format=json&prop=imageinfo&iiprop=url&iiurlwidth=128&titles=File:Support_Card_30028_Icon.png")
+          pages = json.loads(body).get("query", {}).get("pages", {}) if status == 200 else {}
+          info = next(iter(pages.values()), {}).get("imageinfo", [{}])[0]
+          print("   Direct picture URL:", info.get("thumburl") or info.get("url"))
+          if info.get("thumburl"):
+              status, kind, _ = call(info["thumburl"], headers=browser)
+              print(f"   Direct picture: HTTP {status} {kind}")
 
           if os.environ.get("CLOUDFLARE_API_TOKEN"):
               api = f"https://api.cloudflare.com/client/v4/accounts/{account}/storage/kv/namespaces/{namespace}"
