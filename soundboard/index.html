@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Soundboard</title>
+<style>
+  :root{--bg:#1e1f22;--panel:#2b2d31;--tile:#383a40;--hover:#4752c4;--accent:#5865f2;--text:#f2f3f5;--muted:#b5bac1;--danger:#da373c}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,sans-serif}
+  header{position:sticky;top:0;z-index:5;background:var(--panel);padding:12px 16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;box-shadow:0 2px 8px #0006}
+  h1{font-size:18px;margin:0 8px 0 0}
+  label{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px}
+  select,button,input[type=text]{background:var(--tile);color:var(--text);border:0;border-radius:6px;padding:7px 10px;font:inherit}
+  select{max-width:220px}
+  button{cursor:pointer}
+  button:hover{background:var(--hover)}
+  button.primary{background:var(--accent)}
+  button.danger:hover{background:var(--danger)}
+  main{padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
+  .tile{background:var(--tile);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px;min-height:110px;position:relative;border:2px solid transparent}
+  .tile.playing{border-color:#23a559}
+  .tile .play{flex:1;font-size:15px;font-weight:600;background:var(--panel);min-height:54px;word-break:break-word}
+  .tile .play:hover{background:var(--accent)}
+  .row{display:flex;gap:4px;align-items:center;justify-content:space-between}
+  .row button{padding:3px 7px;font-size:12px;background:var(--panel)}
+  .key{font-size:12px;color:var(--muted);background:var(--panel);border-radius:4px;padding:2px 6px;min-width:26px;text-align:center}
+  .loop.on{background:var(--accent)}
+  #empty{grid-column:1/-1;text-align:center;color:var(--muted);padding:60px 20px;border:2px dashed var(--tile);border-radius:12px}
+  body.drag main{outline:3px dashed var(--accent);outline-offset:-8px}
+  .hint{padding:0 16px 24px;color:var(--muted);font-size:13px;line-height:1.5}
+  input[type=range]{width:110px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🔊 Soundboard</h1>
+  <button class="primary" id="add">＋ Add sounds</button>
+  <button id="stop">⏹ Stop all</button>
+  <label>Output (→ Discord mic)
+    <select id="out"></select>
+  </label>
+  <label>Volume <input type="range" id="vol" min="0" max="1" step="0.01" value="0.8"></label>
+  <label><input type="checkbox" id="mon"> Hear it too</label>
+  <label id="monWrap" hidden>Monitor
+    <select id="monDev"></select>
+  </label>
+  <input type="file" id="file" accept="audio/*" multiple hidden>
+</header>
+<main id="grid"></main>
+<div class="hint">
+  Drop audio files anywhere to add them. Press a tile's key (focus must be on this window) to play it. Click the key badge to change it.<br>
+  <b>Discord setup:</b> install a virtual cable (e.g. VB-Cable), set <i>Output</i> above to “CABLE Input”, then in Discord → Voice &amp; Video set <i>Input Device</i> to “CABLE Output”. Tick “Hear it too” to also hear sounds yourself.
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const grid=$('#grid'), outSel=$('#out'), monSel=$('#monDev');
+let sounds=[]; const active=new Set();
+
+/* ---------- storage (IndexedDB) ---------- */
+const dbp=new Promise((res,rej)=>{const r=indexedDB.open('soundboard',1);
+  r.onupgradeneeded=()=>r.result.createObjectStore('s',{keyPath:'id'});
+  r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
+async function tx(mode,fn){const db=await dbp;return new Promise((res,rej)=>{
+  const t=db.transaction('s',mode),st=t.objectStore('s'),rq=fn(st);
+  t.oncomplete=()=>res(rq&&rq.result);t.onerror=()=>rej(t.error)})}
+const save=s=>tx('readwrite',st=>st.put(s));
+const del=id=>tx('readwrite',st=>st.delete(id));
+const loadAll=()=>tx('readonly',st=>st.getAll());
+
+/* ---------- settings ---------- */
+const cfg=JSON.parse(localStorage.getItem('sbcfg')||'{}');
+const saveCfg=()=>localStorage.setItem('sbcfg',JSON.stringify(cfg));
+$('#vol').value=cfg.vol??0.8; $('#mon').checked=!!cfg.mon;
+$('#vol').oninput=e=>{cfg.vol=+e.target.value;saveCfg();active.forEach(a=>a.el.volume=cfg.vol)};
+$('#mon').onchange=e=>{cfg.mon=e.target.checked;saveCfg();$('#monWrap').hidden=!cfg.mon};
+outSel.onchange=()=>{cfg.out=outSel.value;saveCfg()};
+monSel.onchange=()=>{cfg.monDev=monSel.value;saveCfg()};
+$('#monWrap').hidden=!cfg.mon;
+
+async function loadDevices(){
+  try{ // permission needed to see device names
+    const s=await navigator.mediaDevices.getUserMedia({audio:true});s.getTracks().forEach(t=>t.stop());
+  }catch{}
+  const devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audiooutput');
+  for(const [sel,key] of [[outSel,'out'],[monSel,'monDev']]){
+    sel.innerHTML='';
+    devs.forEach(d=>sel.add(new Option(d.label||d.deviceId||'Default',d.deviceId)));
+    if(cfg[key]&&devs.some(d=>d.deviceId===cfg[key]))sel.value=cfg[key];
+    else{ // prefer a virtual cable for main output
+      const cable=key==='out'&&devs.find(d=>/cable input|vb-audio|voicemeeter/i.test(d.label));
+      if(cable)sel.value=cable.deviceId;
+    }
+    cfg[key]=sel.value;
+  }
+  saveCfg();
+}
+if(!('setSinkId' in HTMLMediaElement.prototype))
+  document.querySelector('.hint').insertAdjacentHTML('afterbegin','<b style="color:#f0b232">⚠ This browser can’t pick an output device. Use Chrome or Edge.</b><br>');
+navigator.mediaDevices?.addEventListener?.('devicechange',loadDevices);
+loadDevices();
+
+/* ---------- playback ---------- */
+async function mk(url,dev,loop){
+  const el=new Audio(url);el.loop=loop;el.volume=cfg.vol??0.8;
+  if(dev&&el.setSinkId){try{await el.setSinkId(dev)}catch(e){console.warn(e)}}
+  return el;
+}
+async function play(s){
+  const url=URL.createObjectURL(s.blob), els=[];
+  const main=await mk(url,cfg.out,s.loop); els.push(main);
+  if(cfg.mon) els.push(await mk(url,cfg.monDev,s.loop));
+  const h={el:main,els,s,url};
+  active.add(h);mark();
+  main.onended=()=>end(h);
+  els.forEach(e=>e.play().catch(()=>end(h)));
+}
+function end(h){h.els.forEach(e=>{e.pause()});URL.revokeObjectURL(h.url);active.delete(h);mark()}
+function stopAll(){[...active].forEach(end)}
+function mark(){document.querySelectorAll('.tile').forEach(t=>t.classList.toggle('playing',[...active].some(h=>h.s.id===t.dataset.id)))}
+$('#stop').onclick=stopAll;
+
+/* ---------- UI ---------- */
+function render(){
+  grid.innerHTML='';
+  if(!sounds.length){grid.innerHTML='<div id="empty">No sounds yet.<br>Click “Add sounds” or drag audio files here.</div>';return}
+  sounds.forEach(s=>{
+    const t=document.createElement('div');t.className='tile';t.dataset.id=s.id;
+    t.innerHTML=`<button class="play"></button>
+      <div class="row"><span class="key" title="Click to set hotkey"></span>
+      <span><button class="loop" title="Loop">🔁</button><button class="ren" title="Rename">✎</button><button class="rm danger" title="Delete">✕</button></span></div>`;
+    t.querySelector('.play').textContent=s.name;
+    t.querySelector('.play').onclick=()=>play(s);
+    const k=t.querySelector('.key');k.textContent=s.key||'—';
+    k.onclick=()=>{k.textContent='press…';const f=e=>{e.preventDefault();e.stopPropagation();
+      s.key=(e.key==='Escape'||e.key==='Backspace')?'':e.key.toLowerCase();save(s);removeEventListener('keydown',f,true);render()};
+      addEventListener('keydown',f,true)};
+    const lp=t.querySelector('.loop');lp.classList.toggle('on',!!s.loop);
+    lp.onclick=()=>{s.loop=!s.loop;save(s);lp.classList.toggle('on',s.loop)};
+    t.querySelector('.ren').onclick=()=>{const n=prompt('Name',s.name);if(n){s.name=n;save(s);render()}};
+    t.querySelector('.rm').onclick=()=>{if(confirm(`Delete "${s.name}"?`)){del(s.id);sounds=sounds.filter(x=>x!==s);render()}};
+    grid.append(t);
+  });
+  mark();
+}
+addEventListener('keydown',e=>{
+  if(e.target.matches('input,select,textarea')||e.ctrlKey||e.metaKey||e.altKey)return;
+  if(e.key==='Escape')return stopAll();
+  const s=sounds.find(x=>x.key&&x.key===e.key.toLowerCase());
+  if(s){e.preventDefault();play(s)}
+});
+
+/* ---------- adding files ---------- */
+async function addFiles(files){
+  const used=new Set(sounds.map(s=>s.key));
+  const keys='1234567890qwertyuiopasdfghjklzxcvbnm'.split('');
+  for(const f of files){
+    if(!f.type.startsWith('audio/')&&!/\.(mp3|wav|ogg|m4a|flac|aac|webm)$/i.test(f.name))continue;
+    const key=keys.find(k=>!used.has(k))||'';used.add(key);
+    const s={id:crypto.randomUUID(),name:f.name.replace(/\.[^.]+$/,''),blob:f,key,loop:false,t:Date.now()};
+    await save(s);sounds.push(s);
+  }
+  render();
+}
+$('#add').onclick=()=>$('#file').click();
+$('#file').onchange=e=>{addFiles(e.target.files);e.target.value=''};
+['dragenter','dragover'].forEach(ev=>addEventListener(ev,e=>{e.preventDefault();document.body.classList.add('drag')}));
+['dragleave','drop'].forEach(ev=>addEventListener(ev,e=>{e.preventDefault();document.body.classList.remove('drag')}));
+addEventListener('drop',e=>addFiles(e.dataTransfer.files));
+
+loadAll().then(r=>{sounds=(r||[]).sort((a,b)=>a.t-b.t);render()});
+</script>
+</body>
+</html>
