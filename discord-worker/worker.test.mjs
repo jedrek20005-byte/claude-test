@@ -164,7 +164,7 @@ test("status and register pages", async () => {
   assert.match(status, /❌ DISCORD_TOKEN is missing/);
 
   const page = await (await run(new Request("https://x/register"))).text();
-  assert.match(page, /client_id=4242&amp;scope=bot\+applications\.commands&amp;permissions=52224|client_id=4242&scope=bot\+applications\.commands&permissions=52224/);
+  assert.match(page, /client_id=4242&amp;scope=bot\+applications\.commands&amp;permissions=117760|client_id=4242&scope=bot\+applications\.commands&permissions=117760/);
   assert.match(page, /Uma Bot/);
 
   const failed = await run(new Request("https://x/register"), { DISCORD_PUBLIC_KEY: "ab" });
@@ -290,7 +290,7 @@ test("/uma_here explains how to add the bot when it can't see the channel", asyn
     url.endsWith("/channels/555") ? Response.json({ message: "Missing Access" }, { status: 403 }) : new Response(null);
   await run(await signedRequest(command("uma_here")), { ...ENV, UMA_STATE: kv });
   const content = JSON.parse(editCalls()[0].init.body).content;
-  assert.match(content, /scope=bot\+applications\.commands&permissions=52224/);
+  assert.match(content, /scope=bot\+applications\.commands&permissions=117760/);
   assert.equal(kv.json("guilds"), null);
 });
 

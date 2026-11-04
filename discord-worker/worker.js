@@ -24,8 +24,8 @@ const RETRY_AFTER_MS = 30 * 60 * 1000;
 // Keys and hashes of posted pictures: about four months of hourly posts.
 const HISTORY_LENGTH = 6000;
 export const EVERY_HOURS = [1, 2, 3, 4, 6, 8, 12, 24];
-// View Channel + Send Messages + Embed Links + Attach Files
-const BOT_PERMISSIONS = "52224";
+// View Channel + Send Messages + Embed Links + Attach Files + Read Message History (for /uma_import)
+const BOT_PERMISSIONS = "117760";
 const BOT_USER_AGENT = "DiscordBot (https://github.com/jedrek20005-byte/claude-test, 1.0)";
 
 const DEFAULT_SETTINGS = {
