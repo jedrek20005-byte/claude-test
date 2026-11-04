@@ -1,18 +1,25 @@
-# Cloudflare Worker for the slash commands and the daily picture (see README,
-# "Slash commands without a computer"). The Python bot and the GitHub Actions
-# daily post don't use this file.
-name = "claude-test"
+# The Cloudflare Worker for the slash commands, scheduled pictures and deck
+# builder. .github/workflows/deploy-worker.yml deploys it on every change to
+# discord-worker/worker.js or this file (needs the CLOUDFLARE_API_TOKEN secret).
+# The DISCORD_PUBLIC_KEY and DISCORD_TOKEN secrets are set in the Cloudflare
+# dashboard; deploys keep them.
+name = "belnolight"
 main = "discord-worker/worker.js"
 compatibility_date = "2026-07-01"
-# Keep variables added in the Cloudflare dashboard when GitHub pushes redeploy.
+account_id = "1b83162d6cf687554e942ff69d3311dc"
+workers_dev = true
+# Keep variables added in the Cloudflare dashboard.
 keep_vars = true
 
-# Checks every 5 minutes whether it's time for the daily picture.
+# Checks every 5 minutes whether it's time to post.
 [triggers]
 crons = ["*/5 * * * *"]
 
-# The UMA_STATE KV namespace (settings and post history) is created in the
-# Cloudflare dashboard; to deploy with Wrangler instead, add it here:
-# [[kv_namespaces]]
-# binding = "UMA_STATE"
-# id = "<namespace id>"
+# Settings, saved card lists and post history.
+[[kv_namespaces]]
+binding = "UMA_STATE"
+id = "5353bff80d914f7cb3aec78f7a8b8f7d"
+
+# Keeps the Logs tab in the dashboard working.
+[observability]
+enabled = true

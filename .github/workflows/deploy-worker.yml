@@ -1,0 +1,35 @@
+name: Deploy Cloudflare Worker
+
+# Sends discord-worker/worker.js to Cloudflare whenever it changes, so the
+# code never has to be pasted into the dashboard editor.
+on:
+  push:
+    paths:
+      - discord-worker/worker.js
+      - wrangler.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Deploy with Wrangler
+        env:
+          # Cloudflare dashboard → My Profile → API Tokens → "Edit Cloudflare Workers" template
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::warning::Add the CLOUDFLARE_API_TOKEN secret to deploy the Worker automatically (see README)."
+            [ "$GITHUB_EVENT_NAME" = "push" ] && exit 0 || exit 1
+          fi
+          npx --yes wrangler@4 deploy

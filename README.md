@@ -64,6 +64,7 @@ Every step below works in a phone browser; switch to "desktop site" if a page lo
    - Open **Bot** → **Reset Token** and copy the token too.
 2. **Create the Worker:** sign up at <https://dash.cloudflare.com> (free) → **Workers & Pages** → **Create**. Either:
    - **Import a repository** → pick this repo → **Deploy**, or
+   - **Let GitHub deploy it** (best on a phone, and every code change deploys itself): create a token at **My Profile → API Tokens → Create Token → Edit Cloudflare Workers**, add it to this repo as the Actions secret `CLOUDFLARE_API_TOKEN`, and run the **Deploy Cloudflare Worker** workflow. Set `name`, `account_id` and the KV `id` in [`wrangler.toml`](wrangler.toml) to your own first; it then also creates the storage binding and timer from steps 4–5. Or:
    - **Start with Hello World!** → **Deploy** → **Edit code**, then paste the contents of [`discord-worker/worker.js`](https://raw.githubusercontent.com/jedrek20005-byte/claude-test/ccr-5787c415-0zgod8/discord-worker/worker.js) and tap **Deploy**.
 3. **Add the keys** in the Worker → **Settings** → **Variables and Secrets** → **Add**, with type **Secret**:
    - `DISCORD_PUBLIC_KEY` = the Public Key
