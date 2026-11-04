@@ -93,8 +93,9 @@ test("answers Discord's ping and registers /uma", async () => {
   const commands = JSON.parse(put.init.body);
   assert.deepEqual(commands.map((c) => c.name), [
     "uma", "uma_here", "uma_every", "uma_time", "uma_off", "uma_status", "uma_say", "uma_monthly", "uma_monthly_off",
-    "uma_cards", "uma_deck", "uma_fans", "uma_quota", "uma_summary",
+    "uma_cards", "uma_deck", "uma_test", "uma_fans", "uma_quota", "uma_summary",
   ]);
+  assert.equal(commands.find((c) => c.name === "uma_test").default_member_permissions, "32");
   assert.equal(commands.find((c) => c.name === "uma_quota").default_member_permissions, "32");
   assert.equal(commands.find((c) => c.name === "uma_fans").default_member_permissions, undefined); // for everyone
   for (const command of commands.slice(1, 9)) {
@@ -628,6 +629,7 @@ test("/uma_monthly without a message opens a box, and the box saves it", async (
   const opened = await (await run(await signedRequest(asUser("uma_monthly", [{ name: "day", value: 1 }, { name: "ping", value: "777" }])), env)).json();
   assert.equal(opened.type, 9);
   assert.match(opened.data.custom_id, /^uma_monthly:1:1200:555:777:[\w-]{22}$/);
+  assert.match(opened.data.components[0].components[0].value, /it's Belno! 💚/); // pre-filled with Belno's text
   const submit = (custom_id, user = "123456789") => ({
     type: 5, application_id: "4242", token: "interaction-token", guild_id: "777", channel_id: "555",
     member: { user: { id: user } },
@@ -735,20 +737,25 @@ test("/uma_quota and /uma_fans save the quota and each member's fans", async () 
 });
 
 test("club summary compares with the month before", () => {
-  const before = { 111: { fans: 20_000_000, name: "A" }, 222: { fans: 31_000_000, name: "B" }, 444: { fans: 5_000_000, name: "D" } };
-  const now = { 111: { fans: 32_500_000, name: "A" }, 222: { fans: 12_000_000, name: "B" }, 333: { fans: 40_000_000, name: "C" } };
+  // Real Discord IDs (snowflakes) show as mentions.
+  const [A, B, C, D] = ["100000000000000111", "100000000000000222", "100000000000000333", "100000000000000444"];
+  const before = { [A]: { fans: 20_000_000, name: "A" }, [B]: { fans: 31_000_000, name: "B" }, [D]: { fans: 5_000_000, name: "D" } };
+  const now = { [A]: { fans: 32_500_000, name: "A" }, [B]: { fans: 12_000_000, name: "B" }, [C]: { fans: 40_000_000, name: "C" } };
   const embed = clubSummary("2026-11", now, before, 30_000_000);
   assert.equal(embed.title, "📊 Club summary for November 2026");
   const text = embed.description;
+  assert.match(text, /^Thank you for all your hard work this month, trainers!/);
   assert.match(text, /Total fans:\*\* 84.5M \(▲ 51% vs October 2026\)/);
   assert.match(text, /Members reported:\*\* 3 \(3 in October 2026\)/);
   assert.match(text, /Quota \(30M\):\*\* 2\/3 done \(1\/3 in October 2026\)/);
-  assert.match(text, /Top fans:\*\* 1\. <@333> 40M · 2\. <@111> 32.5M · 3\. <@222> 12M/);
-  assert.match(text, /Most improved:\*\* <@111> 20M → 32.5M \(▲ 63%\)/);
-  assert.match(text, /Quota done:\*\* <@333>, <@111>/);
-  assert.match(text, /Quota not reached:\*\* <@222> 12M/);
-  assert.match(text, /No report yet\*\* \(reported in October 2026\): <@444>/);
+  assert.ok(text.includes(`Top fans:** 1. <@${C}> 40M · 2. <@${A}> 32.5M · 3. <@${B}> 12M`));
+  assert.ok(text.includes(`Most improved:** <@${A}> 20M → 32.5M (▲ 63%)`));
+  assert.ok(text.includes(`Quota done:** <@${C}>, <@${A}>`));
+  assert.ok(text.includes(`Quota not reached:** <@${B}> 12M`));
+  assert.ok(text.includes(`No report yet** (reported in October 2026): <@${D}>`));
   assert.match(clubSummary("2026-11", now, {}, null, { partial: true }).title, /\(so far\)/);
+  // Made-up example members (no real Discord ID) show by name instead.
+  assert.match(clubSummary("2026-11", { 1: { fans: 5, name: "Gold Ship" } }, {}, null).description, /1\. \*\*Gold Ship\*\* 5/);
 });
 
 test("/uma_summary shows this month, or says nobody reported", async () => {
@@ -783,4 +790,60 @@ test("last month's summary is posted on the 1st from 12:00, once", async () => {
   assert.deepEqual(body.allowed_mentions, { parse: [] });
   assert.equal(kv.json("guilds")["777"].club.lastSummary, "2026-11");
   assert.equal(kv.json("guilds")["777"].club.quota, 30_000_000); // the rest of the settings are kept
+});
+
+// ---- /uma_test ----------------------------------------------------------------------
+
+const testCalls = () => calls.filter((c) => /\/channels\/\d+\/messages$/.test(c.url) && c.init.method === "POST");
+
+test("/uma_test previews the monthly reminder privately, or sends it for real", async () => {
+  const monthly = { day: 25, time: "18:00", channelId: "556", roleId: "4444", text: "Quota time!", lastSent: "2026-10" };
+  const kv = fakeKV({ guilds: { 777: { timeZone: "UTC", monthly } } });
+  const env = { ...ENV, UMA_STATE: kv };
+  const response = await run(await signedRequest(command("uma_test", [{ name: "what", value: "monthly" }])), env);
+  assert.deepEqual(await response.json(), { type: 5, data: { flags: 64 } });
+  assert.equal(testCalls().length, 0);
+  const preview = JSON.parse(editCalls()[0].init.body);
+  assert.match(preview.content, /goes out on day \*\*25\*\*[\s\S]*<@&4444>\nQuota time!/);
+  assert.deepEqual(preview.allowed_mentions, { parse: [] });
+
+  calls = [];
+  await run(await signedRequest(command("uma_test", [{ name: "what", value: "monthly" }, { name: "post", value: true }])), env);
+  const [sent] = testCalls();
+  assert.ok(sent.url.endsWith("/channels/556/messages"));
+  assert.deepEqual(JSON.parse(sent.init.body), { content: "<@&4444>\nQuota time!", allowed_mentions: { parse: [], roles: ["4444"] } });
+  assert.match(JSON.parse(editCalls()[0].init.body).content, /Sent a test in <#556>/);
+  assert.equal(kv.json("guilds")["777"].monthly.lastSent, "2026-10"); // a test isn't the real one
+});
+
+test("/uma_test monthly without a reminder shows Belno's default text", async () => {
+  await run(await signedRequest(command("uma_test", [{ name: "what", value: "monthly" }])), { ...ENV, UMA_STATE: fakeKV() });
+  const content = JSON.parse(editCalls()[0].init.body).content;
+  assert.match(content, /No monthly reminder yet/);
+  assert.match(content, /it's Belno! 💚[\s\S]*Ganbatte/);
+});
+
+test("/uma_test summary shows real data, or an example before anyone reports", async () => {
+  const kv = fakeKV({ guilds: { 777: { timeZone: "UTC", club: { quota: 30_000_000, channelId: "555" } } } });
+  const env = { ...ENV, UMA_STATE: kv };
+  await run(await signedRequest(command("uma_test", [{ name: "what", value: "summary" }])), env);
+  let edit = JSON.parse(editCalls()[0].init.body);
+  assert.match(edit.embeds[0].title, /\(example\)$/);
+  assert.match(edit.content, /example with made-up members/);
+
+  const month = new Date().toISOString().slice(0, 7);
+  await kv.put(`fans:777:${month}:111`, "", { metadata: { fans: 31_000_000, name: "A" } });
+  calls = [];
+  await run(await signedRequest(command("uma_test", [{ name: "what", value: "summary" }, { name: "post", value: true }])), env);
+  const [sent] = testCalls();
+  assert.ok(sent.url.endsWith("/channels/555/messages"));
+  assert.match(JSON.parse(sent.init.body).embeds[0].title, /\(so far\)/);
+  edit = JSON.parse(editCalls()[0].init.body);
+  assert.match(edit.content, /Sent a test in <#555>/);
+});
+
+test("/uma_test with post but no channel says so", async () => {
+  await run(await signedRequest(command("uma_test", [{ name: "what", value: "summary" }, { name: "post", value: true }])), { ...ENV, UMA_STATE: fakeKV() });
+  assert.equal(testCalls().length, 0);
+  assert.match(JSON.parse(editCalls()[0].init.body).content, /no channel for it yet/);
 });

@@ -147,6 +147,19 @@ const COMMANDS = [
     ],
   },
   {
+    name: "uma_test",
+    description: "See how the monthly reminder or club summary looks, right now",
+    type: 1,
+    ...ADMIN_ONLY,
+    options: [
+      {
+        type: 3, name: "what", description: "What to test", required: true,
+        choices: [{ name: "Monthly reminder", value: "monthly" }, { name: "Club summary", value: "summary" }],
+      },
+      { type: 5, name: "post", description: "Also send it for real in its channel (otherwise only you see it)", required: false },
+    ],
+  },
+  {
     name: "uma_fans",
     description: "Save the fans you got this month (for the club summary)",
     type: 1,
@@ -539,6 +552,12 @@ const COMMAND_HANDLERS = {
     });
   },
 
+  uma_test(interaction, env, ctx) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    ctx.waitUntil(runTest(interaction, env));
+    return jsonResponse({ type: 5, data: { flags: 64 } });
+  },
+
   async uma_fans(interaction, env) {
     if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
     const options = optionValues(interaction);
@@ -659,7 +678,7 @@ const COMMAND_HANDLERS = {
           type: 1,
           components: [{
             type: 4, custom_id: "text", label: "Message", style: 2, min_length: 1, max_length: 1900, required: true,
-            placeholder: "Monthly fan quota ends soon, trainers! Let's finish it together 💚",
+            value: BELNO_REMINDER,
           }],
         }],
       },
@@ -805,6 +824,12 @@ export function describeMonthly(monthly, timeZone, now = new Date()) {
   return `day **${monthly.day}** of every month at **${monthly.time}** (${timeZone})${ping}; ` +
     `next on ${nextMonthlyDate(monthly, now, timeZone)}`;
 }
+
+// Belno Light's default monthly reminder (pre-filled in the /uma_monthly box).
+const BELNO_REMINDER =
+  "Hi trainers, it's Belno! 💚\n" +
+  "Our club's fan quota for this month ends soon. If you haven't reached it yet, let's run a few more races together!\n" +
+  "I'll be cheering for you the whole way. Ganbatte! 🏇✨";
 
 function monthlyContent(monthly) {
   if (!monthly.roleId) return { content: monthly.text, allowed_mentions: { parse: [] } };
@@ -977,6 +1002,9 @@ async function loadFans(env, guildId, month) {
   return result;
 }
 
+// Real members show as mentions (never pinging); made-up example ones by name.
+const who = (id, entry) => (/^\d{15,}$/.test(id) ? `<@${id}>` : `**${entry?.name ?? "Trainer"}**`);
+
 const listNames = (entries, limit = 15) =>
   entries.length <= limit ? entries.join(", ") : `${entries.slice(0, limit).join(", ")} +${entries.length - limit} more`;
 
@@ -986,6 +1014,10 @@ export function clubSummary(month, data, before, quota, { partial = false } = {}
   const totalBefore = Object.values(before).reduce((sum, m) => sum + m.fans, 0);
   const previous = monthName(previousMonth(month));
   const lines = [
+    partial
+      ? "Here's how our club is doing so far. Keep going, everyone, I'm cheering for you! 💚"
+      : "Thank you for all your hard work this month, trainers! Here's how our club did 💚",
+    "",
     `**Total fans:** ${formatFans(total)}` + (totalBefore ? ` (${change(total, totalBefore)} vs ${previous})` : ""),
     `**Members reported:** ${members.length}` + (Object.keys(before).length ? ` (${Object.keys(before).length} in ${previous})` : ""),
   ];
@@ -995,7 +1027,7 @@ export function clubSummary(month, data, before, quota, { partial = false } = {}
     lines.push(`**Quota (${formatFans(quota)}):** ${done.length}/${members.length} done` +
       (Object.keys(before).length ? ` (${doneBefore}/${Object.keys(before).length} in ${previous})` : ""));
   }
-  lines.push("", "🏆 **Top fans:** " + members.slice(0, 3).map((m, i) => `${i + 1}. <@${m.id}> ${formatFans(m.fans)}`).join(" · "));
+  lines.push("", "🏆 **Top fans:** " + members.slice(0, 3).map((m, i) => `${i + 1}. ${who(m.id, m)} ${formatFans(m.fans)}`).join(" · "));
   const improved = members
     .filter((m) => before[m.id]?.fans && m.fans > before[m.id].fans)
     .map((m) => ({ ...m, growth: (m.fans - before[m.id].fans) / before[m.id].fans }))
@@ -1003,15 +1035,15 @@ export function clubSummary(month, data, before, quota, { partial = false } = {}
     .slice(0, 3);
   if (improved.length) {
     lines.push("📈 **Most improved:** " + improved.map((m) =>
-      `<@${m.id}> ${formatFans(before[m.id].fans)} → ${formatFans(m.fans)} (▲ ${Math.round(m.growth * 100)}%)`).join(" · "));
+      `${who(m.id, m)} ${formatFans(before[m.id].fans)} → ${formatFans(m.fans)} (▲ ${Math.round(m.growth * 100)}%)`).join(" · "));
   }
   if (quota) {
-    const done = members.filter((m) => m.fans >= quota).map((m) => `<@${m.id}>`);
-    const notYet = members.filter((m) => m.fans < quota).map((m) => `<@${m.id}> ${formatFans(m.fans)}`);
+    const done = members.filter((m) => m.fans >= quota).map((m) => who(m.id, m));
+    const notYet = members.filter((m) => m.fans < quota).map((m) => `${who(m.id, m)} ${formatFans(m.fans)}`);
     if (done.length) lines.push(`✅ **Quota done:** ${listNames(done)}`);
     if (notYet.length) lines.push(`${partial ? "🏃 **Still going:**" : "❌ **Quota not reached:**"} ${listNames(notYet)}`);
   }
-  const missing = Object.keys(before).filter((id) => !data[id]).map((id) => `<@${id}>`);
+  const missing = Object.keys(before).filter((id) => !data[id]).map((id) => who(id, before[id]));
   if (missing.length) lines.push(`💤 **No report yet** (reported in ${previous}): ${listNames(missing)}`);
   return {
     title: `📊 Club summary for ${monthName(month)}${partial ? " (so far)" : ""}`,
@@ -1045,6 +1077,79 @@ async function postClubSummary(env, guildId, settings, now) {
     console.error(`Club summary for server ${guildId} failed: ${err.message}`);
     return { lastError: err.message, retryAfter: now.getTime() + RETRY_AFTER_MS };
   }
+}
+
+// ---- /uma_test ----------------------------------------------------------------------
+
+// Sample members for a summary preview before anyone has reported.
+const EXAMPLE_FANS = {
+  now: { 1: { fans: 41_000_000, name: "Special Week" }, 2: { fans: 32_500_000, name: "Silence Suzuka" }, 3: { fans: 18_000_000, name: "Gold Ship" } },
+  before: { 1: { fans: 30_000_000, name: "Special Week" }, 2: { fans: 33_000_000, name: "Silence Suzuka" }, 4: { fans: 25_000_000, name: "Tokai Teio" } },
+};
+
+async function runTest(interaction, env) {
+  const editUrl = `${API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+  try {
+    await sendTest(interaction, env, editUrl);
+  } catch (err) {
+    console.error(err);
+    await sendToDiscord(editUrl, "PATCH", {}, { content: "Something went wrong, sorry." }).catch(() => {});
+  }
+}
+
+async function sendTest(interaction, env, editUrl) {
+  const options = optionValues(interaction);
+  const settings = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
+  let preview, channelId, note;
+  if (options.what === "monthly") {
+    const monthly = settings.monthly;
+    channelId = monthly?.channelId;
+    preview = monthlyContent(monthly ?? { text: BELNO_REMINDER, roleId: null });
+    note = monthly
+      ? `This is your monthly reminder; it goes out on ${describeMonthly(monthly, settings.timeZone)}.`
+      : "No monthly reminder yet, so here's my default text. Set it up with `/uma_monthly`!";
+  } else {
+    channelId = settings.club?.channelId;
+    const thisMonth = localNow(new Date(), settings.timeZone).day.slice(0, 7);
+    const lastMonth = previousMonth(thisMonth);
+    let month = lastMonth;
+    let data = await loadFans(env, interaction.guild_id, lastMonth);
+    if (!Object.keys(data).length) {
+      month = thisMonth;
+      data = await loadFans(env, interaction.guild_id, thisMonth);
+    }
+    if (Object.keys(data).length) {
+      const before = await loadFans(env, interaction.guild_id, previousMonth(month));
+      preview = { embeds: [clubSummary(month, data, before, settings.club?.quota, { partial: month === thisMonth })] };
+      note = month === lastMonth
+        ? "This is last month's summary, like the one I post on the 1st."
+        : "Nobody reported fans for last month, so this is this month so far.";
+    } else {
+      const embed = clubSummary(lastMonth, EXAMPLE_FANS.now, EXAMPLE_FANS.before, settings.club?.quota ?? 30_000_000);
+      preview = { embeds: [{ ...embed, title: `${embed.title} (example)` }] };
+      note = "Nobody has saved their fans yet, so this is an example with made-up members.";
+    }
+    if (!settings.club) note += " Turn on the monthly summary with `/uma_quota`.";
+  }
+
+  let content = note;
+  if (options.post) {
+    if (!channelId) {
+      content = `${note}\nI didn't send it anywhere: there's no channel for it yet.`;
+    } else {
+      const res = await fetch(`${API}/channels/${channelId}/messages`, {
+        method: "POST",
+        headers: { ...botHeaders(env), "Content-Type": "application/json" },
+        body: JSON.stringify({ ...preview, allowed_mentions: preview.allowed_mentions ?? { parse: [] } }),
+      });
+      content = res.ok
+        ? `Sent a test in <#${channelId}> 💚 (it doesn't count as this month's real one)`
+        : `I couldn't post in <#${channelId}> (HTTP ${res.status}). Please check I can see the channel and send messages there.`;
+    }
+  }
+  // The private preview never pings anyone.
+  const shown = preview.content ? `${content}\n\n${preview.content}` : content;
+  await sendToDiscord(editUrl, "PATCH", {}, { content: shown.slice(0, 2000), embeds: preview.embeds ?? [], allowed_mentions: { parse: [] } });
 }
 
 // ---- Deck builder ----------------------------------------------------------
