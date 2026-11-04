@@ -30,6 +30,14 @@
   body.drag main{outline:3px dashed var(--accent);outline-offset:-8px}
   .hint{padding:0 16px 24px;color:var(--muted);font-size:13px;line-height:1.5}
   input[type=range]{width:110px}
+  #voice{background:var(--panel);margin:12px 16px 0;padding:12px 14px;border-radius:10px;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+  #voice h2{font-size:15px;margin:0 4px 0 0}
+  #micBtn.on{background:#23a559}
+  #pilotBtn{font-weight:700;letter-spacing:.5px}
+  #pilotBtn.on{background:#f0b232;color:#111;box-shadow:0 0 12px #f0b23288}
+  .lvl{width:90px;height:8px;background:var(--tile);border-radius:4px;overflow:hidden}
+  .lvl i{display:block;height:100%;width:0;background:#23a559}
+  .kbd{font-size:11px;opacity:.7;margin-left:4px}
 </style>
 </head>
 <body>
@@ -47,6 +55,25 @@
   </label>
   <input type="file" id="file" accept="audio/*" multiple hidden>
 </header>
+<section id="voice">
+  <h2>🎤 Voice changer</h2>
+  <button id="micBtn">Mic → Discord: OFF <span class="kbd">F2</span></button>
+  <button id="pilotBtn">✈ Fighter pilot: OFF <span class="kbd">F3</span></button>
+  <label>Preset <select id="preset">
+    <option value="clean">Clean (no effect)</option>
+    <option value="pilot">Fighter pilot</option>
+    <option value="deep">Deep voice</option>
+    <option value="chip">Chipmunk</option>
+    <option value="robot">Robot</option>
+    <option value="mega">Megaphone</option>
+    <option value="cave">Cave echo</option>
+  </select></label>
+  <label>Your mic <select id="inDev"></select></label>
+  <label>Mic gain <input type="range" id="micGain" min="0" max="2" step="0.01" value="1"></label>
+  <label>Radio static <input type="range" id="static" min="0" max="1" step="0.01" value="0.4"></label>
+  <label><input type="checkbox" id="selfMon"> Hear myself (use headphones!)</label>
+  <div class="lvl" title="Mic level"><i id="lvl"></i></div>
+</section>
 <main id="grid"></main>
 <div class="hint">
   Drop audio files anywhere to add them. Press a tile's key (focus must be on this window) to play it. Click the key badge to change it.<br>
@@ -168,6 +195,178 @@ $('#file').onchange=e=>{addFiles(e.target.files);e.target.value=''};
 ['dragenter','dragover'].forEach(ev=>addEventListener(ev,e=>{e.preventDefault();document.body.classList.add('drag')}));
 ['dragleave','drop'].forEach(ev=>addEventListener(ev,e=>{e.preventDefault();document.body.classList.remove('drag')}));
 addEventListener('drop',e=>addFiles(e.dataTransfer.files));
+
+/* ================= VOICE CHANGER ================= */
+const WORKLET=`
+class Pitch extends AudioWorkletProcessor{
+  static get parameterDescriptors(){return[{name:'ratio',defaultValue:1,minValue:0.25,maxValue:4,automationRate:'k-rate'}]}
+  constructor(){super();this.N=8192;this.buf=new Float32Array(this.N);this.w=0;this.p=0;this.W=0.06*sampleRate}
+  process(ins,outs,pr){
+    const i=ins[0][0],o=outs[0][0];if(!i||!o)return true;
+    const r=pr.ratio[0],N=this.N,b=this.buf;
+    for(let n=0;n<i.length;n++){
+      b[this.w]=i[n];let out=0;
+      for(let t=0;t<2;t++){
+        const ph=(this.p+t*0.5)%1;let rp=this.w-ph*this.W;if(rp<0)rp+=N;
+        const i0=Math.floor(rp),f=rp-i0,s=b[i0]*(1-f)+b[(i0+1)%N]*f,g=Math.sin(Math.PI*ph);
+        out+=s*g*g;
+      }
+      o[n]=out;this.w=(this.w+1)%N;
+      this.p=(((this.p+(1-r)/this.W)%1)+1)%1;
+    }
+    return true;
+  }
+}
+registerProcessor('pitch',Pitch);`;
+
+const V={ctx:null,on:false,pilot:false,stream:null,src:null,inGain:null,chainIn:null,chainOut:null,nodes:[],
+  master:null,dest:null,outEl:null,monEl:null,an:null,noiseBuf:null,open:false,hold:0,timer:null,pilotBus:null,staticG:null};
+const vcfg=cfg.voice=cfg.voice||{preset:'clean',gain:1,stat:0.4,selfMon:false};
+$('#preset').value=vcfg.preset;$('#micGain').value=vcfg.gain;$('#static').value=vcfg.stat;$('#selfMon').checked=vcfg.selfMon;
+
+async function loadMics(){
+  const devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput');
+  const sel=$('#inDev');sel.innerHTML='';
+  devs.forEach(d=>sel.add(new Option(d.label||'Microphone',d.deviceId)));
+  if(vcfg.inDev&&devs.some(d=>d.deviceId===vcfg.inDev))sel.value=vcfg.inDev;else vcfg.inDev=sel.value;
+}
+setTimeout(loadMics,800);
+$('#inDev').onchange=async e=>{vcfg.inDev=e.target.value;saveCfg();if(V.on){await stopMic();await startMic()}};
+
+function noiseBuffer(ctx){
+  const b=ctx.createBuffer(1,ctx.sampleRate*2,ctx.sampleRate),d=b.getChannelData(0);
+  for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;return b;
+}
+function curve(k){const n=1024,c=new Float32Array(n);for(let i=0;i<n;i++){const x=i*2/n-1;c[i]=(1+k)*x/(1+k*Math.abs(x))}return c}
+
+async function startMic(){
+  try{
+    if(!V.ctx){
+      V.ctx=new AudioContext({latencyHint:'interactive'});
+      await V.ctx.audioWorklet.addModule('data:application/javascript;base64,'+btoa(WORKLET));
+      V.noiseBuf=noiseBuffer(V.ctx);
+      V.dest=V.ctx.createMediaStreamDestination();
+      V.master=V.ctx.createGain();V.master.connect(V.dest);
+      V.an=V.ctx.createAnalyser();V.an.fftSize=1024;
+      V.outEl=new Audio();V.outEl.srcObject=V.dest.stream;
+      V.monEl=new Audio();V.monEl.srcObject=V.dest.stream;
+    }
+    await V.ctx.resume();
+    V.stream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:vcfg.inDev?{exact:vcfg.inDev}:undefined,
+      echoCancellation:true,noiseSuppression:false,autoGainControl:false}});
+    V.src=V.ctx.createMediaStreamSource(V.stream);
+    V.inGain=V.ctx.createGain();V.inGain.gain.value=vcfg.gain;
+    V.src.connect(V.inGain);V.inGain.connect(V.an);
+    V.on=true;
+    if(V.outEl.setSinkId&&cfg.out)try{await V.outEl.setSinkId(cfg.out)}catch(e){console.warn(e)}
+    await V.outEl.play();applySelfMon();
+    buildChain();
+    V.timer=setInterval(tick,30);
+    loadMics();
+  }catch(e){alert('Could not start the microphone: '+e.message);V.on=false;V.stream?.getTracks().forEach(t=>t.stop());V.ctx?.close();V.ctx=null;V.pilot=false}
+  ui();
+}
+async function stopMic(){
+  clearInterval(V.timer);teardown();
+  V.stream?.getTracks().forEach(t=>t.stop());V.src?.disconnect();V.inGain?.disconnect();
+  V.outEl?.pause();V.monEl?.pause();V.on=false;$('#lvl').style.width='0';ui();
+}
+function teardown(){
+  V.nodes.forEach(n=>{try{n.stop?.()}catch{}try{n.disconnect()}catch{}});V.nodes=[];
+  V.inGain?.disconnect();V.inGain?.connect(V.an);V.pilotBus=null;V.staticG=null;
+}
+function add(...n){V.nodes.push(...n);return n[0]}
+function chain(...n){for(let i=0;i<n.length-1;i++)n[i].connect(n[i+1]);return n}
+
+function buildChain(){
+  if(!V.on)return;teardown();const c=V.ctx,m=V.master;
+  const mode=V.pilot?'pilot':vcfg.preset;
+  const bq=(type,freq,q=0.7,gain=0)=>{const n=c.createBiquadFilter();n.type=type;n.frequency.value=freq;n.Q.value=q;n.gain.value=gain;V.nodes.push(n);return n};
+  const gn=v=>{const n=c.createGain();n.gain.value=v;V.nodes.push(n);return n};
+  const comp=(th,ra)=>{const n=c.createDynamicsCompressor();n.threshold.value=th;n.ratio.value=ra;n.attack.value=0.003;n.release.value=0.15;V.nodes.push(n);return n};
+  const shaper=k=>{const n=c.createWaveShaper();n.curve=curve(k);n.oversample='2x';V.nodes.push(n);return n};
+  const pitch=r=>{const n=new AudioWorkletNode(c,'pitch');n.parameters.get('ratio').value=r;V.nodes.push(n);return n};
+  const out=gn(1);out.connect(m);
+  const inp=V.inGain;
+  if(mode==='clean'){inp.connect(out)}
+  else if(mode==='pilot'){
+    // radio-band voice, light crunch, heavy compression, plus static & squelch clicks
+    const [a]=chain(bq('highpass',450,0.8),bq('peaking',1800,1.2,6),bq('lowpass',3000,0.9),shaper(6),comp(-32,14),gn(1.6),out);
+    inp.connect(a);
+    const bus=gn(1);V.pilotBus=bus;
+    const nz=c.createBufferSource();nz.buffer=V.noiseBuf;nz.loop=true;V.nodes.push(nz);
+    const sg=gn(0.02*vcfg.stat*2);V.staticG=sg;
+    chain(nz,bq('bandpass',1800,0.6),sg,out);nz.start();
+    bus.connect(out);
+  }
+  else if(mode==='deep'){const [a]=chain(pitch(0.72),bq('lowshelf',200,0.7,5),out);inp.connect(a)}
+  else if(mode==='chip'){const [a]=chain(pitch(1.7),out);inp.connect(a)}
+  else if(mode==='robot'){
+    const o=c.createOscillator();o.frequency.value=55;o.type='sine';V.nodes.push(o);
+    const rm=gn(0);o.connect(rm.gain);o.start();
+    const [a]=chain(rm,shaper(2),gn(1.8),out);inp.connect(a);
+  }
+  else if(mode==='mega'){const [a]=chain(bq('highpass',500),bq('lowpass',3500),shaper(12),comp(-30,12),gn(1.5),out);inp.connect(a)}
+  else if(mode==='cave'){
+    const [a]=chain(inp,gn(1),out);
+    const d=c.createDelay(1);d.delayTime.value=0.23;V.nodes.push(d);
+    const fb=gn(0.45),wet=gn(0.6);inp.connect(d);d.connect(fb);fb.connect(d);d.connect(wet);
+    wet.connect(bq('lowpass',2500)).connect(out);
+  }
+  ui();
+}
+
+// voice activity -> radio squelch click when pilot mode is active
+function tick(){
+  const a=new Float32Array(V.an.fftSize);V.an.getFloatTimeDomainData(a);
+  let s=0;for(const x of a)s+=x*x;const rms=Math.sqrt(s/a.length);
+  $('#lvl').style.width=Math.min(100,rms*400)+'%';
+  const now=performance.now();
+  if(rms>0.02){V.hold=now+300;if(!V.open){V.open=true;if(V.pilotBus)squelch(0.18)}}
+  else if(V.open&&now>V.hold){V.open=false;if(V.pilotBus)squelch(0.12)}
+}
+function squelch(len){
+  const c=V.ctx,s=c.createBufferSource();s.buffer=V.noiseBuf;
+  const bp=c.createBiquadFilter();bp.type='bandpass';bp.frequency.value=2200;bp.Q.value=1.2;
+  const g=c.createGain(),t=c.currentTime;
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.35,t+0.005);g.gain.exponentialRampToValueAtTime(0.001,t+len);
+  s.connect(bp);bp.connect(g);g.connect(V.pilotBus);s.start(t);s.stop(t+len+0.05);
+}
+
+function applySelfMon(){
+  if(!V.monEl)return;
+  if(vcfg.selfMon&&V.on){
+    if(V.monEl.setSinkId&&cfg.monDev)V.monEl.setSinkId(cfg.monDev).catch(()=>{});
+    V.monEl.play().catch(()=>{});
+  }else V.monEl.pause();
+}
+function ui(){
+  const mb=$('#micBtn'),pb=$('#pilotBtn');
+  mb.classList.toggle('on',V.on);
+  mb.innerHTML=`Mic → Discord: ${V.on?'ON':'OFF'} <span class="kbd">F2</span>`;
+  pb.classList.toggle('on',V.pilot);
+  pb.innerHTML=`✈ Fighter pilot: ${V.pilot?'ON':'OFF'} <span class="kbd">F3</span>`;
+}
+const toggleMic=()=>V.on?stopMic():startMic();
+async function togglePilot(){
+  V.pilot=!V.pilot;
+  if(!V.on)await startMic();   // turning pilot on also opens the mic
+  else buildChain();
+  ui();
+}
+$('#micBtn').onclick=toggleMic;
+$('#pilotBtn').onclick=togglePilot;
+$('#preset').onchange=e=>{vcfg.preset=e.target.value;saveCfg();if(V.on)buildChain()};
+$('#micGain').oninput=e=>{vcfg.gain=+e.target.value;saveCfg();if(V.inGain)V.inGain.gain.value=vcfg.gain};
+$('#static').oninput=e=>{vcfg.stat=+e.target.value;saveCfg();if(V.staticG)V.staticG.gain.value=0.04*vcfg.stat};
+$('#selfMon').onchange=e=>{vcfg.selfMon=e.target.checked;saveCfg();applySelfMon()};
+outSel.addEventListener('change',()=>{if(V.outEl?.setSinkId)V.outEl.setSinkId(cfg.out).catch(()=>{})});
+monSel.addEventListener('change',applySelfMon);
+addEventListener('keydown',e=>{
+  if(e.key==='F2'){e.preventDefault();toggleMic()}
+  else if(e.key==='F3'){e.preventDefault();togglePilot()}
+});
+ui();
 
 loadAll().then(r=>{sounds=(r||[]).sort((a,b)=>a.t-b.t);render()});
 </script>
