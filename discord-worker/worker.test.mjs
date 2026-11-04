@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
 import worker, {
-  buildDeck, buildEmbed, clearCardCache, deckEmbed, describeSchedule, isSafe, localNow, makeCardsToken, parseTime,
-  pickImage, postTimes, prettyCharacter, readCardsToken, runSchedule,
+  buildDeck, buildEmbed, clearCardCache, deckEmbed, describeSchedule, isSafe, localNow, makeCardsToken, monthlyDue,
+  parseTime, pickImage, postTimes, prettyCharacter, readCardsToken, runSchedule,
 } from "./worker.js";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
@@ -92,9 +92,10 @@ test("answers Discord's ping and registers /uma", async () => {
   assert.equal(put.init.headers.Authorization, "Bot bot-token");
   const commands = JSON.parse(put.init.body);
   assert.deepEqual(commands.map((c) => c.name), [
-    "uma", "uma_here", "uma_every", "uma_time", "uma_off", "uma_status", "uma_say", "uma_cards", "uma_deck",
+    "uma", "uma_here", "uma_every", "uma_time", "uma_off", "uma_status", "uma_say", "uma_monthly", "uma_monthly_off",
+    "uma_cards", "uma_deck",
   ]);
-  for (const command of commands.slice(1, 7)) {
+  for (const command of commands.slice(1, 9)) {
     assert.equal(command.default_member_permissions, "32"); // Manage Server
     assert.deepEqual(command.contexts, [0]); // servers only
   }
@@ -572,4 +573,100 @@ test("/uma_say explains when it can't post in the channel", async () => {
       : new Response(null);
   await run(await signedRequest(asUser("uma_say", [{ name: "message", value: "hi" }])));
   assert.match(JSON.parse(editCalls()[0].init.body).content, /can't send messages in <#555>/);
+});
+
+// ---- /uma_monthly ----------------------------------------------------------------
+
+test("monthlyDue: once a month, on the chosen day or the month's last day", () => {
+  const monthly = { day: 25, time: "18:00", lastSent: null };
+  const at = (iso) => new Date(iso);
+  assert.equal(monthlyDue(monthly, at("2026-11-25T16:59:00Z"), "Europe/Berlin"), null); // 17:59 in Berlin
+  assert.equal(monthlyDue(monthly, at("2026-11-25T17:00:00Z"), "Europe/Berlin"), "2026-11");
+  assert.equal(monthlyDue(monthly, at("2026-11-27T09:00:00Z"), "Europe/Berlin"), "2026-11"); // catches up later in the month
+  assert.equal(monthlyDue({ ...monthly, lastSent: "2026-11" }, at("2026-11-28T09:00:00Z"), "Europe/Berlin"), null);
+  assert.equal(monthlyDue(monthly, at("2026-11-20T09:00:00Z"), "Europe/Berlin"), null);
+  const last = { day: 31, time: "12:00", lastSent: null };
+  assert.equal(monthlyDue(last, at("2026-11-29T12:00:00Z"), "UTC"), null);
+  assert.equal(monthlyDue(last, at("2026-11-30T12:00:00Z"), "UTC"), "2026-11"); // November has 30 days
+  assert.equal(monthlyDue(last, at("2027-02-28T12:00:00Z"), "UTC"), "2027-02");
+});
+
+test("/uma_monthly saves the message and shows when it's next sent", async () => {
+  const kv = fakeKV({ guilds: { 777: { timeZone: "Europe/Berlin" } } });
+  const env = { ...ENV, UMA_STATE: kv };
+  const options = [
+    { name: "day", value: 25 }, { name: "time", value: "18:00" }, { name: "message", value: "Quota ends soon!\nGo go go" },
+    { name: "ping", value: "4444" },
+  ];
+  const { data } = await (await run(await signedRequest(asUser("uma_monthly", options)), env)).json();
+  assert.equal(data.flags, 64);
+  assert.match(data.content, /in <#555> on day \*\*25\*\* of every month at \*\*18:00\*\* \(Europe\/Berlin\), mentioning <@&4444>/);
+  assert.match(data.content, /> Quota ends soon!\n> Go go go/);
+  const monthly = kv.json("guilds")["777"].monthly;
+  assert.deepEqual(
+    { ...monthly, lastSent: undefined },
+    { day: 25, time: "18:00", channelId: "555", roleId: "4444", text: "Quota ends soon!\nGo go go", lastSent: undefined, lastError: null, retryAfter: 0 },
+  );
+
+  const bad = await (await run(await signedRequest(asUser("uma_monthly", [{ name: "day", value: 5 }, { name: "time", value: "25:00" }, { name: "message", value: "x" }])), env)).json();
+  assert.equal(bad.data.flags, 64);
+  assert.match(bad.data.content, /didn't understand that time/);
+});
+
+test("/uma_monthly without a message opens a box, and the box saves it", async () => {
+  const kv = fakeKV();
+  const env = { ...ENV, UMA_STATE: kv };
+  const opened = await (await run(await signedRequest(asUser("uma_monthly", [{ name: "day", value: 1 }, { name: "ping", value: "777" }])), env)).json();
+  assert.equal(opened.type, 9);
+  assert.match(opened.data.custom_id, /^uma_monthly:1:1200:555:777:[\w-]{22}$/);
+  const submit = (custom_id, user = "123456789") => ({
+    type: 5, application_id: "4242", token: "interaction-token", guild_id: "777", channel_id: "555",
+    member: { user: { id: user } },
+    data: { custom_id, components: [{ type: 1, components: [{ custom_id: "text", value: "New month, new quota! 💚" }] }] },
+  });
+  const saved = (await (await run(await signedRequest(submit(opened.data.custom_id)), env)).json()).data;
+  assert.match(saved.content, /day \*\*1\*\* of every month at \*\*12:00\*\* \(UTC\), mentioning @everyone/);
+  assert.equal(kv.json("guilds")["777"].monthly.roleId, "everyone"); // picking @everyone gives the server's ID
+  assert.equal(kv.json("guilds")["777"].monthly.text, "New month, new quota! 💚");
+
+  const forged = (await (await run(await signedRequest(submit(opened.data.custom_id, "1")), env)).json()).data;
+  assert.match(forged.content, /didn't come from/);
+});
+
+test("the monthly message is posted once a month, with the role mention", async () => {
+  const monthly = { day: 25, time: "18:00", channelId: "555", roleId: "4444", text: "Quota!", lastSent: "2026-10" };
+  const kv = fakeKV({ guilds: { 777: { timeZone: "UTC", monthly } } });
+  const env = { ...ENV, UMA_STATE: kv };
+  await runSchedule(env, new Date("2026-11-25T17:55:00Z"));
+  assert.equal(dailyCalls().length, 0);
+  await runSchedule(env, new Date("2026-11-25T18:00:00Z"));
+  await runSchedule(env, new Date("2026-11-25T18:05:00Z"));
+  const posts = dailyCalls();
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0].init.body), {
+    content: "<@&4444>\nQuota!", allowed_mentions: { parse: [], roles: ["4444"] },
+  });
+  assert.equal(kv.json("guilds")["777"].monthly.lastSent, "2026-11");
+  assert.equal(kv.json("guilds")["777"].monthly.text, "Quota!"); // the rest of the settings are kept
+});
+
+test("a failed monthly message is retried, and /uma_monthly_off stops it", async () => {
+  const monthly = { day: 1, time: "00:00", channelId: "555", roleId: null, text: "Hi", lastSent: null };
+  const kv = fakeKV({ guilds: { 777: { timeZone: "UTC", monthly } } });
+  const env = { ...ENV, UMA_STATE: kv };
+  routes["discord.com"] = () => Response.json({ message: "Missing Access" }, { status: 403 });
+  await runSchedule(env, new Date("2026-12-01T00:00:00Z"));
+  assert.match(kv.json("guilds")["777"].monthly.lastError, /403/);
+  assert.equal(kv.json("guilds")["777"].monthly.lastSent, null);
+
+  const status = (await (await run(await signedRequest(command("uma_status")), env)).json()).data.content;
+  assert.match(status, /Monthly message: day \*\*1\*\*/);
+  assert.match(status, /Last monthly problem: .*403/);
+
+  await run(await signedRequest(command("uma_monthly_off")), env);
+  assert.equal(kv.json("guilds")["777"].monthly, null);
+  routes["discord.com"] = () => new Response(null);
+  calls = [];
+  await runSchedule(env, new Date("2026-12-01T01:00:00Z"));
+  assert.equal(dailyCalls().length, 0);
 });

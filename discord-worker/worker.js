@@ -105,6 +105,29 @@ const COMMANDS = [
       },
     ],
   },
+  {
+    name: "uma_monthly",
+    description: "Post a message every month, like a club quota reminder",
+    type: 1,
+    ...ADMIN_ONLY,
+    options: [
+      {
+        type: 4, name: "day", description: "Day of the month (in shorter months, 29-31 means the last day)",
+        required: true, min_value: 1, max_value: 31,
+      },
+      { type: 3, name: "time", description: "24-hour time, like 18:00 (12:00 if left empty)", required: false, max_length: 5 },
+      {
+        type: 3, name: "message", description: "What to post (leave empty to write a longer, multi-line one)",
+        required: false, max_length: 1900,
+      },
+      { type: 8, name: "ping", description: "A role to mention, like your club members", required: false },
+      {
+        type: 7, name: "channel", description: "Where to post it (this channel if left empty)",
+        required: false, channel_types: [0, 5, 10, 11, 12],
+      },
+    ],
+  },
+  { name: "uma_monthly_off", description: "Stop the monthly message", type: 1, ...ADMIN_ONLY },
   { name: "uma_cards", description: "Pick the support cards you own (for /uma_deck)", type: 1 },
   {
     name: "uma_deck",
@@ -172,6 +195,9 @@ export default {
       // a good moment to make sure the commands are registered.
       ctx.waitUntil(registerCommands(env).catch((err) => console.error(err.message)));
       return jsonResponse({ type: 1 });
+    }
+    if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("uma_monthly:")) {
+      return monthlyFromModal(interaction, env);
     }
     if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("uma_say:")) {
       ctx.waitUntil(sayFromModal(interaction, env));
@@ -503,6 +529,44 @@ const COMMAND_HANDLERS = {
     return jsonResponse({ type: 5 });
   },
 
+  async uma_monthly(interaction, env) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    const options = optionValues(interaction);
+    const time = parseTime(options.time ?? "12:00");
+    if (!time) {
+      return reply("Hmm… I didn't understand that time. Please write it like `09:00` or `21:30`!", { ephemeral: true });
+    }
+    const monthly = {
+      day: Number(options.day), time, channelId: options.channel || interaction.channel_id, roleId: options.ping || null,
+    };
+    if (options.message) {
+      return saveMonthly(interaction, env, { ...monthly, text: options.message });
+    }
+    // No text given: open a box for a longer message, signed like /uma_say's.
+    const id = `${monthly.day}:${time.replace(":", "")}:${monthly.channelId}:${monthly.roleId || 0}`;
+    const signature = await sign(env, `uma-monthly:${userOf(interaction).id}:${id}`);
+    return jsonResponse({
+      type: 9,
+      data: {
+        custom_id: `uma_monthly:${id}:${signature}`,
+        title: "Monthly message 💚",
+        components: [{
+          type: 1,
+          components: [{
+            type: 4, custom_id: "text", label: "Message", style: 2, min_length: 1, max_length: 1900, required: true,
+            placeholder: "Monthly fan quota ends soon, trainers! Let's finish it together 💚",
+          }],
+        }],
+      },
+    });
+  },
+
+  async uma_monthly_off(interaction, env) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    await updateGuild(env, interaction.guild_id, { monthly: null });
+    return reply("Okay, no more monthly message. Use `/uma_monthly` to set one up again 💚", { ephemeral: true });
+  },
+
   async uma_status(interaction, env) {
     if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
     const settings = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
@@ -515,6 +579,11 @@ const COMMAND_HANDLERS = {
     if (settings.lastError) {
       lines.push(`⚠️ Last problem: ${settings.lastError.slice(0, 300)}`);
     }
+    const monthly = settings.monthly;
+    lines.push(monthly
+      ? `📆 Monthly message: ${describeMonthly(monthly, settings.timeZone)}, in <#${monthly.channelId}>` +
+        (monthly.lastError ? `\n⚠️ Last monthly problem: ${monthly.lastError.slice(0, 300)}` : "")
+      : "📆 Monthly message: off (use `/uma_monthly`)");
     return reply(lines.join("\n"), { ephemeral: true });
   },
 };
@@ -547,39 +616,137 @@ async function useThisChannel(interaction, env) {
 
 // ---- Scheduled pictures ----------------------------------------------------
 
-// Runs from the cron trigger: posts in every server whose next post time has
-// passed and that hasn't had that picture yet. A failed post is retried 30 minutes later.
+// Runs from the cron trigger: posts the scheduled pictures and monthly
+// messages that are due. A failed post is retried 30 minutes later.
 export async function runSchedule(env, now = new Date()) {
   if (!env.UMA_STATE || !env.DISCORD_TOKEN) return;
   const updates = {};
   for (const [guildId, stored] of Object.entries(await loadGuilds(env))) {
     const settings = { ...DEFAULT_SETTINGS, ...stored };
-    const slot = dueSlot(settings, localNow(now, settings.timeZone));
-    if (
-      !settings.enabled || !settings.channelId || !slot || settings.lastPost === slot ||
-      now.getTime() < settings.retryAfter
-    ) {
-      continue;
-    }
-    try {
-      const image = await pickImage(SOURCES, await loadSeen(env));
-      if (!image) throw new Error("None of the image sites returned a picture.");
-      const url = `${API}/channels/${settings.channelId}/messages`;
-      await deliver(url, "POST", botHeaders(env), image, scheduledTitle(settings.everyHours));
-      await remember(env, image);
-      updates[guildId] = { lastPost: slot, lastError: null, retryAfter: 0 };
-    } catch (err) {
-      console.error(`Scheduled picture for server ${guildId} failed: ${err.message}`);
-      updates[guildId] = { lastError: err.message, retryAfter: now.getTime() + RETRY_AFTER_MS };
-    }
+    const picture = await postScheduledPicture(env, guildId, settings, now);
+    const monthly = await postMonthlyMessage(env, guildId, settings, now);
+    if (picture || monthly) updates[guildId] = { ...picture, ...(monthly ? { monthly } : {}) };
   }
   if (Object.keys(updates).length) {
     // Re-read so a settings command run meanwhile isn't overwritten.
     const guilds = await loadGuilds(env);
-    for (const [guildId, update] of Object.entries(updates)) {
-      guilds[guildId] = { ...DEFAULT_SETTINGS, ...guilds[guildId], ...update };
+    for (const [guildId, { monthly, ...update }] of Object.entries(updates)) {
+      const current = { ...DEFAULT_SETTINGS, ...guilds[guildId], ...update };
+      if (monthly && current.monthly) current.monthly = { ...current.monthly, ...monthly };
+      guilds[guildId] = current;
     }
     await env.UMA_STATE.put("guilds", JSON.stringify(guilds));
+  }
+}
+
+async function postScheduledPicture(env, guildId, settings, now) {
+  const slot = dueSlot(settings, localNow(now, settings.timeZone));
+  if (
+    !settings.enabled || !settings.channelId || !slot || settings.lastPost === slot ||
+    now.getTime() < settings.retryAfter
+  ) {
+    return null;
+  }
+  try {
+    const image = await pickImage(SOURCES, await loadSeen(env));
+    if (!image) throw new Error("None of the image sites returned a picture.");
+    const url = `${API}/channels/${settings.channelId}/messages`;
+    await deliver(url, "POST", botHeaders(env), image, scheduledTitle(settings.everyHours));
+    await remember(env, image);
+    return { lastPost: slot, lastError: null, retryAfter: 0 };
+  } catch (err) {
+    console.error(`Scheduled picture for server ${guildId} failed: ${err.message}`);
+    return { lastError: err.message, retryAfter: now.getTime() + RETRY_AFTER_MS };
+  }
+}
+
+// ---- Monthly message (/uma_monthly) --------------------------------------------
+
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
+  "October", "November", "December"];
+const daysIn = (year, month) => new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+// The month ("2026-11") whose message is due now and not sent yet, or null.
+// In months shorter than the chosen day, it's sent on the last day.
+export function monthlyDue(monthly, now, timeZone) {
+  const local = localNow(now, timeZone);
+  const [year, month, day] = local.day.split("-").map(Number);
+  const dueDay = Math.min(monthly.day, daysIn(year, month));
+  const passed = day > dueDay || (day === dueDay && local.time >= monthly.time);
+  const monthKey = local.day.slice(0, 7);
+  return passed && monthly.lastSent !== monthKey ? monthKey : null;
+}
+
+// "25 November 2026": the next time the message goes out.
+function nextMonthlyDate(monthly, now, timeZone) {
+  const local = localNow(now, timeZone);
+  let [year, month] = local.day.split("-").map(Number);
+  if (monthly.lastSent === local.day.slice(0, 7)) {
+    [year, month] = month === 12 ? [year + 1, 1] : [year, month + 1];
+  }
+  return `${Math.min(monthly.day, daysIn(year, month))} ${MONTHS[month - 1]} ${year}`;
+}
+
+export function describeMonthly(monthly, timeZone, now = new Date()) {
+  const ping = monthly.roleId ? `, mentioning ${monthly.roleId === "everyone" ? "@everyone" : `<@&${monthly.roleId}>`}` : "";
+  return `day **${monthly.day}** of every month at **${monthly.time}** (${timeZone})${ping}; ` +
+    `next on ${nextMonthlyDate(monthly, now, timeZone)}`;
+}
+
+function monthlyContent(monthly) {
+  if (!monthly.roleId) return { content: monthly.text, allowed_mentions: { parse: [] } };
+  if (monthly.roleId === "everyone") {
+    return { content: `@everyone\n${monthly.text}`, allowed_mentions: { parse: ["everyone"] } };
+  }
+  return { content: `<@&${monthly.roleId}>\n${monthly.text}`, allowed_mentions: { parse: [], roles: [monthly.roleId] } };
+}
+
+async function saveMonthly(interaction, env, monthly, { now = new Date() } = {}) {
+  // Picking @everyone in a role option gives the server's own ID.
+  if (monthly.roleId === interaction.guild_id) monthly.roleId = "everyone";
+  const guild = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
+  // If this month's moment has already passed, start next month rather than posting right away.
+  const thisMonth = monthlyDue({ ...monthly, lastSent: null }, now, guild.timeZone);
+  const saved = { ...monthly, lastSent: thisMonth, lastError: null, retryAfter: 0 };
+  await updateGuild(env, interaction.guild_id, { monthly: saved });
+  const preview = saved.text.split("\n").slice(0, 6).map((line) => `> ${line}`).join("\n");
+  let text = `Got it! I'll post in <#${saved.channelId}> on ${describeMonthly(saved, guild.timeZone, now)} 💚\n${preview}`;
+  if (saved.roleId) {
+    text += "\n-# If the mention doesn't notify anyone, let anyone mention that role, " +
+      "or give me the \"Mention @everyone, @here and All Roles\" permission.";
+  }
+  if (guild.timeZone === "UTC") {
+    text += "\n-# Times are in UTC; change the time zone with `/uma_time`.";
+  }
+  return reply(text, { ephemeral: true });
+}
+
+async function monthlyFromModal(interaction, env) {
+  const [, day, hhmm, channelId, roleId, signature] = interaction.data.custom_id.split(":");
+  const id = `${day}:${hhmm}:${channelId}:${roleId}`;
+  const text = interaction.data.components?.[0]?.components?.[0]?.value;
+  if (signature !== (await sign(env, `uma-monthly:${userOf(interaction).id}:${id}`)) || !text) {
+    return reply("That message box didn't come from `/uma_monthly`, so I didn't save it.", { ephemeral: true });
+  }
+  const time = `${hhmm.slice(0, 2)}:${hhmm.slice(2)}`;
+  return saveMonthly(interaction, env, { day: Number(day), time, channelId, roleId: roleId === "0" ? null : roleId, text });
+}
+
+async function postMonthlyMessage(env, guildId, settings, now) {
+  const monthly = settings.monthly;
+  const month = monthly && monthlyDue(monthly, now, settings.timeZone);
+  if (!month || now.getTime() < (monthly.retryAfter || 0)) return null;
+  try {
+    const res = await fetch(`${API}/channels/${monthly.channelId}/messages`, {
+      method: "POST",
+      headers: { ...botHeaders(env), "Content-Type": "application/json" },
+      body: JSON.stringify(monthlyContent(monthly)),
+    });
+    if (!res.ok) throw new Error(`Discord returned HTTP ${res.status}: ${await res.text()}`);
+    return { lastSent: month, lastError: null, retryAfter: 0 };
+  } catch (err) {
+    console.error(`Monthly message for server ${guildId} failed: ${err.message}`);
+    return { lastError: err.message, retryAfter: now.getTime() + RETRY_AFTER_MS };
   }
 }
 
