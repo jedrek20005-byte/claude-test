@@ -80,6 +80,7 @@
   <b>Discord setup:</b> install a virtual cable (e.g. VB-Cable), set <i>Output</i> above to “CABLE Input”, then in Discord → Voice &amp; Video set <i>Input Device</i> to “CABLE Output”. Tick “Hear it too” to also hear sounds yourself.
 </div>
 
+<script src="default-sounds.js"></script>
 <script>
 const $=s=>document.querySelector(s);
 const grid=$('#grid'), outSel=$('#out'), monSel=$('#monDev');
@@ -368,7 +369,20 @@ addEventListener('keydown',e=>{
 });
 ui();
 
-loadAll().then(r=>{sounds=(r||[]).sort((a,b)=>a.t-b.t);render()});
+loadAll().then(async r=>{
+  sounds=r||[];
+  // seed bundled sounds once (so deleting one keeps it deleted)
+  const seeded=new Set(cfg.seeded||[]);
+  for(const d of window.DEFAULT_SOUNDS||[]){
+    if(seeded.has(d.id))continue;seeded.add(d.id);
+    const blob=await (await fetch(d.data)).blob();
+    const used=sounds.some(x=>x.key===d.key);
+    const s={id:d.id,name:d.name,blob,key:used?'':d.key,loop:d.loop,t:Date.now()};
+    await save(s);sounds.push(s);
+  }
+  cfg.seeded=[...seeded];saveCfg();
+  sounds.sort((a,b)=>a.t-b.t);render();
+});
 </script>
 </body>
 </html>
