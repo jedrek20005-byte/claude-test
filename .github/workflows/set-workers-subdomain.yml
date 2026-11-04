@@ -1,0 +1,46 @@
+name: Change workers.dev subdomain
+
+# Renames the account's workers.dev subdomain, the middle part of the Worker's
+# address (https://belnolight.<subdomain>.workers.dev). Afterwards, put the new
+# address in the Discord Developer Portal's Interactions Endpoint URL.
+on:
+  workflow_dispatch:
+    inputs:
+      subdomain:
+        description: "New subdomain: lowercase letters, digits and hyphens, e.g. belno-light"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  change:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Change the subdomain
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SUBDOMAIN: ${{ inputs.subdomain }}
+        run: |
+          if ! [[ "$SUBDOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+            echo "::error::Use only lowercase letters, digits and hyphens (not at the start or end)."
+            exit 1
+          fi
+          account=$(sed -n 's/^account_id = "\(.*\)"/\1/p' wrangler.toml)
+          worker=$(sed -n 's/^name = "\(.*\)"/\1/p' wrangler.toml)
+          curl -sS -X PUT "https://api.cloudflare.com/client/v4/accounts/$account/workers/subdomain" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+            --data "{\"subdomain\":\"$SUBDOMAIN\"}" > result.json
+          python3 - <<'PY'
+          import json, sys
+          result = json.load(open("result.json"))
+          if not result.get("success"):
+              print("::error::Cloudflare said:", json.dumps(result.get("errors")))
+              sys.exit(1)
+          print("Subdomain is now:", result["result"]["subdomain"])
+          PY
+          echo "New address: https://$worker.$SUBDOMAIN.workers.dev"
