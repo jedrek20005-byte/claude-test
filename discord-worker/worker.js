@@ -774,7 +774,8 @@ function tile(card) {
   b.dataset.id = card.id;
   const img = document.createElement("img");
   img.loading = "lazy"; img.alt = ""; img.referrerPolicy = "no-referrer";
-  img.src = "https://umamusu.wiki/Special:FilePath/Support_Card_" + card.id + "_Icon.png?width=128";
+  // The wiki's thumbnail script; its Special:FilePath redirect answers 403.
+  img.src = "https://umamusu.wiki/w/thumb.php?f=Support_Card_" + card.id + "_Icon.png&width=128";
   img.onerror = () => img.remove();
   const tag = document.createElement("span"); tag.className = "tag"; tag.textContent = card.rarity + " · " + card.type + (card.jp_only ? " · JP" : "");
   const name = document.createElement("span"); name.className = "name"; name.textContent = card.character;
