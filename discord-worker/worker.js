@@ -147,6 +147,20 @@ const COMMANDS = [
     ],
   },
   {
+    name: "uma_import",
+    description: "Read members' fans from another bot's Live Board (like UmaCore) instead of /uma_fans",
+    type: 1,
+    ...ADMIN_ONLY,
+    options: [
+      { type: 6, name: "bot", description: "The bot that posts the Live Board", required: false },
+      {
+        type: 7, name: "channel", description: "Where it posts the Live Board (this channel if left empty)",
+        required: false, channel_types: [0, 5, 10, 11, 12],
+      },
+      { type: 5, name: "stop", description: "Stop reading it", required: false },
+    ],
+  },
+  {
     name: "uma_test",
     description: "See how the monthly reminder or club summary looks, right now",
     type: 1,
@@ -558,9 +572,36 @@ const COMMAND_HANDLERS = {
     return jsonResponse({ type: 5, data: { flags: 64 } });
   },
 
+  async uma_import(interaction, env, ctx) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    const options = optionValues(interaction);
+    const current = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
+    if (options.stop) {
+      await updateGuild(env, interaction.guild_id, { club: { ...current.club, source: null } });
+      return reply("Okay, I stopped reading the Live Board. Members can save their fans with `/uma_fans` again 💚", { ephemeral: true });
+    }
+    if (!options.bot) {
+      return reply("Pick the bot that posts the Live Board in `bot:` (for example UmaCore's).", { ephemeral: true });
+    }
+    const user = interaction.data.resolved?.users?.[options.bot];
+    const source = {
+      botId: options.bot, botName: user?.global_name || user?.username || "that bot",
+      channelId: options.channel || interaction.channel_id,
+    };
+    ctx.waitUntil(setupImport(interaction, env, source));
+    return jsonResponse({ type: 5, data: { flags: 64 } });
+  },
+
   async uma_fans(interaction, env) {
     if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
     const options = optionValues(interaction);
+    const source = (await loadGuilds(env))[interaction.guild_id]?.club?.source;
+    if (source) {
+      return reply(
+        `No need, I read everyone's fans from <@${source.botId}>'s Live Board automatically 💚 See \`/uma_summary\`.`,
+        { ephemeral: true },
+      );
+    }
     const fans = parseFans(options.fans);
     if (fans === null) {
       return reply("Hmm… I didn't understand that number. Try something like `32.5m`, `850k` or `32500000`!", { ephemeral: true });
@@ -619,11 +660,11 @@ const COMMAND_HANDLERS = {
     const settings = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
     const thisMonth = localNow(new Date(), settings.timeZone).day.slice(0, 7);
     const month = optionValues(interaction).month === "last" ? previousMonth(thisMonth) : thisMonth;
-    const data = await loadFans(env, interaction.guild_id, month);
+    const data = await loadClubFans(env, interaction.guild_id, month, settings);
     if (!Object.keys(data).length) {
       return reply(`Nobody has saved their fans for ${monthName(month)} yet. Use \`/uma_fans\` to add yours!`, { ephemeral: true });
     }
-    const before = await loadFans(env, interaction.guild_id, previousMonth(month));
+    const before = await loadClubFans(env, interaction.guild_id, previousMonth(month), settings);
     const embed = clubSummary(month, data, before, settings.club?.quota, { partial: month === thisMonth });
     return jsonResponse({ type: 4, data: { embeds: [embed], allowed_mentions: { parse: [] } } });
   },
@@ -708,10 +749,15 @@ const COMMAND_HANDLERS = {
       ? `📆 Monthly message: ${describeMonthly(monthly, settings.timeZone)}, in <#${monthly.channelId}>` +
         (monthly.lastError ? `\n⚠️ Last monthly problem: ${monthly.lastError.slice(0, 300)}` : "")
       : "📆 Monthly message: off (use `/uma_monthly`)");
-    lines.push(settings.club
-      ? `📊 Club quota: ${formatFans(settings.club.quota)} per member; summary on the 1st in <#${settings.club.channelId}>` +
-        (settings.club.lastError ? `\n⚠️ Last summary problem: ${settings.club.lastError.slice(0, 300)}` : "")
+    const club = settings.club;
+    lines.push(club?.quota
+      ? `📊 Club quota: ${formatFans(club.quota)} per member; summary on the 1st in <#${club.channelId}>` +
+        (club.lastError ? `\n⚠️ Last summary problem: ${club.lastError.slice(0, 300)}` : "")
       : "📊 Club quota: off (use `/uma_quota`)");
+    if (club?.source) {
+      lines.push(`🔗 Reading fans from <@${club.source.botId}>'s Live Board in <#${club.source.channelId}> every 30 minutes` +
+        (club.source.lastError ? `\n⚠️ Last read problem: ${club.source.lastError.slice(0, 300)}` : ""));
+    }
     return reply(lines.join("\n"), { ephemeral: true });
   },
 };
@@ -753,7 +799,10 @@ export async function runSchedule(env, now = new Date()) {
     const settings = { ...DEFAULT_SETTINGS, ...stored };
     const picture = await postScheduledPicture(env, guildId, settings, now);
     const monthly = await postMonthlyMessage(env, guildId, settings, now);
-    const club = await postClubSummary(env, guildId, settings, now);
+    // Read the Live Board first, so a summary due now has the newest numbers.
+    const imported = await pollImport(env, guildId, settings, now);
+    const summary = await postClubSummary(env, guildId, settings, now);
+    const club = imported || summary ? { ...summary, ...imported } : null;
     if (picture || monthly || club) {
       updates[guildId] = { ...picture, ...(monthly ? { monthly } : {}), ...(club ? { club } : {}) };
     }
@@ -764,7 +813,11 @@ export async function runSchedule(env, now = new Date()) {
     for (const [guildId, { monthly, club, ...update }] of Object.entries(updates)) {
       const current = { ...DEFAULT_SETTINGS, ...guilds[guildId], ...update };
       if (monthly && current.monthly) current.monthly = { ...current.monthly, ...monthly };
-      if (club && current.club) current.club = { ...current.club, ...club };
+      if (club && current.club) {
+        const { source, ...rest } = club;
+        current.club = { ...current.club, ...rest };
+        if (source && current.club.source) current.club.source = { ...current.club.source, ...source };
+      }
       guilds[guildId] = current;
     }
     await env.UMA_STATE.put("guilds", JSON.stringify(guilds));
@@ -1003,7 +1056,7 @@ async function loadFans(env, guildId, month) {
 }
 
 // Real members show as mentions (never pinging); made-up example ones by name.
-const who = (id, entry) => (/^\d{15,}$/.test(id) ? `<@${id}>` : `**${entry?.name ?? "Trainer"}**`);
+const who = (id, entry) => (/^\d{15,}$/.test(id) ? `<@${id}>` : `**${escapeMarkdown(entry?.name ?? "Trainer")}**`);
 
 const listNames = (entries, limit = 15) =>
   entries.length <= limit ? entries.join(", ") : `${entries.slice(0, limit).join(", ")} +${entries.length - limit} more`;
@@ -1062,9 +1115,9 @@ async function postClubSummary(env, guildId, settings, now) {
   const due = local.day.endsWith("-01") ? local.time >= "12:00" : true;
   if (!due || club.lastSummary === month || now.getTime() < (club.retryAfter || 0)) return null;
   try {
-    const data = await loadFans(env, guildId, month);
+    const data = await loadClubFans(env, guildId, month, settings);
     if (Object.keys(data).length) {
-      const before = await loadFans(env, guildId, previousMonth(month));
+      const before = await loadClubFans(env, guildId, previousMonth(month), settings);
       const res = await fetch(`${API}/channels/${club.channelId}/messages`, {
         method: "POST",
         headers: { ...botHeaders(env), "Content-Type": "application/json" },
@@ -1077,6 +1130,112 @@ async function postClubSummary(env, guildId, settings, now) {
     console.error(`Club summary for server ${guildId} failed: ${err.message}`);
     return { lastError: err.message, retryAfter: now.getTime() + RETRY_AFTER_MS };
   }
+}
+
+// ---- Reading another bot's Live Board (/uma_import) ---------------------------------
+// Made for UmaCore's default Live Board (github.com/oHaruki/UmaCore): one embed
+// titled "📊 Live Board - {club}" with "Competition day: November 04", and one
+// line per member such as "` 1` **Lorelei**: +7.44M (27.62M total)" or
+// "**Misty**: 0 this month". Every board is kept as that month's numbers, the
+// latest day winning, so the last day's final board ends up as the month's total.
+
+const IMPORT_EVERY_MS = 30 * 60 * 1000;
+const COMPETITION_DAY = /Competition day:\**\s*([A-Z][a-z]+)\s+(\d{1,2})/;
+const BOARD_LINE =
+  /\*\*(.+?)\*\*\s*:\s*(?:[+-][\d.,]+\s*[KMB]?\s*\()?([\d.,]+\s*[KMB]?)\s+(?:total|this month|since [A-Za-z]{3,9}\.? \d{1,2})\)?\s*$/i;
+const boardKey = (guildId, month) => `board:${guildId}:${month}`;
+
+export function parseLiveBoard(message) {
+  const text = (message.embeds ?? [])
+    .flatMap((e) => [e.title, e.description, ...(e.fields ?? []).flatMap((f) => [f.name, f.value])])
+    .filter(Boolean)
+    .join("\n");
+  const day = text.match(COMPETITION_DAY);
+  const monthIndex = day ? MONTHS.indexOf(day[1]) : -1;
+  if (monthIndex < 0 || !/Live Board/i.test(text)) return null;
+  const posted = new Date(message.timestamp);
+  // A December board can still be read in January.
+  const year = posted.getUTCFullYear() - (monthIndex === 11 && posted.getUTCMonth() === 0 ? 1 : 0);
+  const members = {};
+  for (const line of text.split("\n")) {
+    const match = line.trim().match(BOARD_LINE);
+    const fans = match && parseFans(match[2].replace(/\s+/g, ""));
+    if (match && fans !== null) members[match[1].replace(/\\(.)/g, "$1").trim()] = fans;
+  }
+  if (!Object.keys(members).length) return null;
+  return { month: `${year}-${String(monthIndex + 1).padStart(2, "0")}`, day: Number(day[2]), members };
+}
+
+// The Live Boards among the bot's recent messages, newest first.
+async function readBoards(env, source) {
+  const res = await fetch(`${API}/channels/${source.channelId}/messages?limit=25`, { headers: botHeaders(env) });
+  if (res.status === 403 || res.status === 404) {
+    throw new Error(`I can't read <#${source.channelId}>. Please let me View Channel and Read Message History there.`);
+  }
+  if (!res.ok) throw new Error(`Discord returned HTTP ${res.status} when I read the channel.`);
+  const fromBot = (await res.json()).filter((m) => m.author?.id === source.botId);
+  if (fromBot.length && fromBot.every((m) => !m.content && !m.embeds?.length && !m.attachments?.length)) {
+    // Discord hides other bots' message text unless the Message Content Intent is on.
+    throw new Error("I can see the bot's messages but not what's in them. Turn on Message Content Intent " +
+      "(Developer Portal → Bot → Privileged Gateway Intents) and save.");
+  }
+  return fromBot.map(parseLiveBoard).filter(Boolean);
+}
+
+async function mergeBoard(env, guildId, board) {
+  const key = boardKey(guildId, board.month);
+  const stored = await env.UMA_STATE.get(key, "json");
+  const same = stored && stored.day === board.day && JSON.stringify(stored.members) === JSON.stringify(board.members);
+  if (same || (stored && stored.day > board.day)) return;
+  await env.UMA_STATE.put(key, JSON.stringify({ day: board.day, members: board.members }), { expirationTtl: FANS_TTL_SECONDS });
+}
+
+// The month's fans from the Live Board when one is linked, otherwise from /uma_fans.
+async function loadClubFans(env, guildId, month, settings) {
+  if (!settings.club?.source) return loadFans(env, guildId, month);
+  const board = await env.UMA_STATE.get(boardKey(guildId, month), "json");
+  return Object.fromEntries(Object.entries(board?.members ?? {}).map(([name, fans]) => [`board:${name}`, { fans, name }]));
+}
+
+async function pollImport(env, guildId, settings, now) {
+  const source = settings.club?.source;
+  if (!source || now.getTime() - (source.lastRead || 0) < IMPORT_EVERY_MS) return null;
+  try {
+    const boards = await readBoards(env, source);
+    for (const board of boards) await mergeBoard(env, guildId, board);
+    return { source: { lastRead: now.getTime(), lastError: boards.length ? null : "No Live Board in the bot's last messages." } };
+  } catch (err) {
+    console.error(`Live Board for server ${guildId}: ${err.message}`);
+    return { source: { lastRead: now.getTime(), lastError: err.message } };
+  }
+}
+
+async function setupImport(interaction, env, source) {
+  const editUrl = `${API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+  let content;
+  try {
+    const boards = await readBoards(env, source);
+    for (const board of boards) await mergeBoard(env, interaction.guild_id, board);
+    const current = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
+    await updateGuild(env, interaction.guild_id, {
+      club: { ...current.club, source: { ...source, lastRead: Date.now(), lastError: null } },
+    });
+    const latest = boards[0];
+    if (latest) {
+      const top = Object.entries(latest.members).sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([name, fans]) => `${escapeMarkdown(name)} ${formatFans(fans)}`).join(", ");
+      content = `Linked! 💚 I read <@${source.botId}>'s Live Board in <#${source.channelId}> every 30 minutes.\n` +
+        `Latest board: **${monthName(latest.month).split(" ")[0]} ${latest.day}**, ${Object.keys(latest.members).length} trainers ` +
+        `(${top}…).`;
+    } else {
+      content = `Linked, but I didn't find a Live Board from <@${source.botId}> in <#${source.channelId}>'s last 25 messages. ` +
+        "I'll keep checking every 30 minutes. If its board doesn't look like UmaCore's default, I may not be able to read it.";
+    }
+    if (!current.club?.quota) content += "\nSet your quota with `/uma_quota` (like `/uma_quota fans:15m`) to get the monthly summary.";
+  } catch (err) {
+    content = `I couldn't read the Live Board yet: ${err.message}\nNothing was changed; run \`/uma_import\` again once that's fixed.`;
+  }
+  await sendToDiscord(editUrl, "PATCH", {}, { content, allowed_mentions: { parse: [] } }).catch((err) => console.error(err));
 }
 
 // ---- /uma_test ----------------------------------------------------------------------
@@ -1113,13 +1272,13 @@ async function sendTest(interaction, env, editUrl) {
     const thisMonth = localNow(new Date(), settings.timeZone).day.slice(0, 7);
     const lastMonth = previousMonth(thisMonth);
     let month = lastMonth;
-    let data = await loadFans(env, interaction.guild_id, lastMonth);
+    let data = await loadClubFans(env, interaction.guild_id, lastMonth, settings);
     if (!Object.keys(data).length) {
       month = thisMonth;
-      data = await loadFans(env, interaction.guild_id, thisMonth);
+      data = await loadClubFans(env, interaction.guild_id, thisMonth, settings);
     }
     if (Object.keys(data).length) {
-      const before = await loadFans(env, interaction.guild_id, previousMonth(month));
+      const before = await loadClubFans(env, interaction.guild_id, previousMonth(month), settings);
       preview = { embeds: [clubSummary(month, data, before, settings.club?.quota, { partial: month === thisMonth })] };
       note = month === lastMonth
         ? "This is last month's summary, like the one I post on the 1st."

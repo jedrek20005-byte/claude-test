@@ -4,7 +4,8 @@ import { beforeEach, test } from "node:test";
 
 import worker, {
   buildDeck, buildEmbed, clearCardCache, clubSummary, deckEmbed, describeSchedule, formatFans, isSafe, localNow,
-  makeCardsToken, monthlyDue, parseFans, parseTime, pickImage, postTimes, prettyCharacter, readCardsToken, runSchedule,
+  makeCardsToken, monthlyDue, parseFans, parseLiveBoard, parseTime, pickImage, postTimes, prettyCharacter, readCardsToken,
+  runSchedule,
 } from "./worker.js";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
@@ -93,8 +94,9 @@ test("answers Discord's ping and registers /uma", async () => {
   const commands = JSON.parse(put.init.body);
   assert.deepEqual(commands.map((c) => c.name), [
     "uma", "uma_here", "uma_every", "uma_time", "uma_off", "uma_status", "uma_say", "uma_monthly", "uma_monthly_off",
-    "uma_cards", "uma_deck", "uma_test", "uma_fans", "uma_quota", "uma_summary",
+    "uma_cards", "uma_deck", "uma_import", "uma_test", "uma_fans", "uma_quota", "uma_summary",
   ]);
+  assert.equal(commands.find((c) => c.name === "uma_import").default_member_permissions, "32");
   assert.equal(commands.find((c) => c.name === "uma_test").default_member_permissions, "32");
   assert.equal(commands.find((c) => c.name === "uma_quota").default_member_permissions, "32");
   assert.equal(commands.find((c) => c.name === "uma_fans").default_member_permissions, undefined); // for everyone
@@ -846,4 +848,126 @@ test("/uma_test with post but no channel says so", async () => {
   await run(await signedRequest(command("uma_test", [{ name: "what", value: "summary" }, { name: "post", value: true }])), { ...ENV, UMA_STATE: fakeKV() });
   assert.equal(testCalls().length, 0);
   assert.match(JSON.parse(editCalls()[0].init.body).content, /no channel for it yet/);
+});
+
+// ---- /uma_import (reading UmaCore's Live Board) ---------------------------------
+
+const BOT = "222222222222222222";
+// Built from UmaCore's default Live Board templates (services/embed_style.py).
+const liveBoard = (day, { raced = [], idle = [], joined = [] } = {}, timestamp = "2026-11-04T16:07:00Z") => ({
+  id: `m${day}`, author: { id: BOT, bot: true, username: "Still in love" }, content: "", timestamp, attachments: [],
+  embeds: [
+    {
+      title: "📊 Live Board - Umamania",
+      description: `**Competition day:** November ${day}\nUpdating through the day — **not final** until the day closes.`,
+      fields: [{ name: "Fans today", value: "8.24M", inline: true }, { name: "Rank", value: "#1,975", inline: true }],
+      footer: { text: "Umamusume Quota Tracker - Umamania · uma.moe as of 15:55 UTC" },
+    },
+    { title: "✅ Raced Today", description: raced.join("\n") },
+    { title: "⚠️ No Fans Yet Today", description: idle.join("\n") },
+    ...(joined.length ? [{ title: "🆕 Joined Today", description: joined.join("\n") }] : []),
+  ],
+});
+const NOV_04 = liveBoard("04", {
+  raced: ["` 1` **Lorelei**: +7.44M (27.62M total)", "` 2` **Bogeysoon**: +6.67M (15.53M total)",
+    "`12` **vikYt**: +648.8K (1.23M total)", "`13` **New One**: +1.2M (3.40M since Nov 9)"],
+  idle: ["**Eli**: 822.3K since Nov 2", "**Misty**: 0 this month", "**lex \\:3**: 0 this month"],
+  joined: ["**Newbie**"],
+});
+
+test("parseLiveBoard reads every member's month total", () => {
+  assert.deepEqual(parseLiveBoard(NOV_04), {
+    month: "2026-11",
+    day: 4,
+    members: {
+      Lorelei: 27_620_000, Bogeysoon: 15_530_000, vikYt: 1_230_000, "New One": 3_400_000,
+      Eli: 822_300, Misty: 0, "lex :3": 0, // "Newbie" joined today, so has no number yet
+    },
+  });
+  assert.equal(parseLiveBoard({ ...NOV_04, embeds: [{ title: "Umamania", image: { url: "x.png" } }] }), null); // the picture report
+  const december = liveBoard("31", { idle: ["**Misty**: 1.00M this month"] }, "2027-01-01T10:00:00Z");
+  december.embeds[0].description = december.embeds[0].description.replace("November", "December");
+  assert.equal(parseLiveBoard(december).month, "2026-12"); // read in January, still last year's December
+});
+
+function boardChannel(messages, { status = 200 } = {}) {
+  routes["discord.com"] = (url, init) => {
+    if (url.includes("/channels/556/messages") && (init.method ?? "GET") === "GET") {
+      return status === 200 ? Response.json(messages) : Response.json({ message: "Missing Access" }, { status });
+    }
+    return new Response(null);
+  };
+}
+
+const importCommand = (options) => ({
+  ...command("uma_import", options),
+  data: { name: "uma_import", options, resolved: { users: { [BOT]: { id: BOT, username: "Still in love", bot: true } } } },
+});
+
+test("/uma_import links the board and shows what it read", async () => {
+  boardChannel([{ id: "x", author: { id: "1" }, content: "hi", embeds: [] }, NOV_04]);
+  const kv = fakeKV({ guilds: { 777: { timeZone: "UTC" } } });
+  const env = { ...ENV, UMA_STATE: kv };
+  const response = await run(await signedRequest(importCommand([{ name: "bot", value: BOT }, { name: "channel", value: "556" }])), env);
+  assert.deepEqual(await response.json(), { type: 5, data: { flags: 64 } });
+  const content = JSON.parse(editCalls()[0].init.body).content;
+  assert.match(content, /Linked! 💚/);
+  assert.match(content, /November 4\*\*, 7 trainers \(Lorelei 27.6M, Bogeysoon 15.5M, New One 3.4M…\)/);
+  assert.match(content, /\/uma_quota/); // no quota yet
+  assert.equal(kv.json("guilds")["777"].club.source.botId, BOT);
+  assert.equal(kv.json("board:777:2026-11").members.Lorelei, 27_620_000);
+
+  // Members don't need /uma_fans any more.
+  const fans = (await (await run(await signedRequest(command("uma_fans", [{ name: "fans", value: "1m" }])), env)).json()).data;
+  assert.match(fans.content, /read everyone's fans/);
+  const status = (await (await run(await signedRequest(command("uma_status")), env)).json()).data.content;
+  assert.match(status, /Club quota: off/);
+  assert.match(status, /Reading fans from <@222222222222222222>'s Live Board in <#556>/);
+
+  await run(await signedRequest(importCommand([{ name: "stop", value: true }])), env);
+  assert.equal(kv.json("guilds")["777"].club.source, null);
+});
+
+test("/uma_import explains permission and Message Content problems", async () => {
+  const env = { ...ENV, UMA_STATE: fakeKV() };
+  boardChannel([], { status: 403 });
+  await run(await signedRequest(importCommand([{ name: "bot", value: BOT }, { name: "channel", value: "556" }])), env);
+  assert.match(JSON.parse(editCalls()[0].init.body).content, /Read Message History/);
+
+  calls = [];
+  boardChannel([{ ...NOV_04, embeds: [] }]); // what Discord sends without the Message Content Intent
+  await run(await signedRequest(importCommand([{ name: "bot", value: BOT }, { name: "channel", value: "556" }])), env);
+  assert.match(JSON.parse(editCalls()[0].init.body).content, /Message Content Intent/);
+  assert.equal(env.UMA_STATE.json("guilds"), null); // nothing saved
+});
+
+test("the board is re-read every 30 minutes, and the last day's final board wins", async () => {
+  const source = { botId: BOT, channelId: "556", lastRead: Date.parse("2026-11-30T14:50:00Z") };
+  const kv = fakeKV({ guilds: { 777: { timeZone: "UTC", club: { quota: 15_000_000, channelId: "555", source, lastSummary: "2026-10" } } } });
+  const env = { ...ENV, UMA_STATE: kv };
+  const nov30 = (lorelei) => liveBoard("30", { raced: [`\` 1\` **Lorelei**: +1.00M (${lorelei} total)`], idle: ["**Misty**: 2.00M this month"] }, "2026-11-30T00:05:00Z");
+  boardChannel([nov30("60.00M")]);
+  await runSchedule(env, new Date("2026-11-30T15:00:00Z")); // only 10 minutes since the last read
+  assert.equal(kv.json("board:777:2026-11"), null);
+  await runSchedule(env, new Date("2026-11-30T15:20:00Z"));
+  assert.equal(kv.json("board:777:2026-11").members.Lorelei, 60_000_000);
+
+  // The day closes; the next board is December's, and November's board shows its final numbers.
+  const dec01 = liveBoard("01", { idle: ["**Lorelei**: 0 this month"] }, "2026-12-01T00:05:00Z");
+  dec01.embeds[0].description = dec01.embeds[0].description.replace("November", "December");
+  boardChannel([dec01, nov30("61.50M")]);
+  await runSchedule(env, new Date("2026-11-30T15:55:00Z"));
+  assert.equal(kv.json("board:777:2026-11").members.Lorelei, 61_500_000);
+  assert.equal(kv.json("board:777:2026-12").members.Lorelei, 0);
+
+  // On the 1st, the summary uses the board's final November numbers.
+  calls = [];
+  await runSchedule(env, new Date("2026-12-01T12:30:00Z"));
+  const summary = calls.find((c) => c.url.endsWith("/channels/555/messages") && c.init.method === "POST");
+  const embed = JSON.parse(summary.init.body).embeds[0];
+  assert.equal(embed.title, "📊 Club summary for November 2026");
+  assert.match(embed.description, /Top fans:\*\* 1\. \*\*Lorelei\*\* 61.5M · 2\. \*\*Misty\*\* 2M/);
+  assert.match(embed.description, /Quota \(15M\):\*\* 1\/2 done/);
+  assert.equal(kv.json("guilds")["777"].club.source.botId, BOT); // the link is kept while its read time updates
+  assert.ok(kv.json("guilds")["777"].club.source.lastRead >= Date.parse("2026-12-01T12:30:00Z"));
 });
