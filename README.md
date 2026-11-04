@@ -53,6 +53,9 @@ After a successful post, the workflow commits the post history to `state/history
 | `/uma_say message:Hi!` | Manage Server | posts the message as the app (leave `message` empty for a multi-line box; `channel:` posts elsewhere; never pings @everyone, @here or roles) |
 | `/uma_monthly day:25 time:18:00 message:…` | Manage Server | posts a message every month, like a club quota reminder (`ping:` mentions a role, `channel:` posts elsewhere; no `message` opens a multi-line box; 29–31 means the last day in shorter months) |
 | `/uma_monthly_off` | Manage Server | stops the monthly message |
+| `/uma_quota fans:30m` | Manage Server | sets the monthly fan quota per member and posts last month's club summary on the 1st (from 12:00) in this channel (or `channel:`) |
+| `/uma_fans fans:32.5m` | everyone | saves the fans you gained this month (latest number counts; admins can add `member:` to save for someone else) |
+| `/uma_summary` | everyone | club summary for this (or last) month: total, quota done/not yet, top fans, most improved, compared with the month before |
 | `/uma_cards` | everyone | private link to your card box: tap the support cards you own and pick their limit break |
 | `/uma_deck goal:Most fans` | everyone | builds your best 5-card deck from your cards (goals: **Most fans**, **Race bonus**) |
 

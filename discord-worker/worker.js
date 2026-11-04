@@ -146,6 +146,41 @@ const COMMANDS = [
       },
     ],
   },
+  {
+    name: "uma_fans",
+    description: "Save the fans you got this month (for the club summary)",
+    type: 1,
+    contexts: [0],
+    options: [
+      { type: 3, name: "fans", description: "Fans gained this month, like 32.5m or 32500000", required: true, max_length: 24 },
+      { type: 6, name: "member", description: "Save it for someone else (Manage Server only)", required: false },
+    ],
+  },
+  {
+    name: "uma_quota",
+    description: "Set the monthly fan quota; I'll post a club summary on the 1st of every month",
+    type: 1,
+    ...ADMIN_ONLY,
+    options: [
+      { type: 3, name: "fans", description: "Fans each member should get per month, like 30m", required: true, max_length: 24 },
+      {
+        type: 7, name: "channel", description: "Where the monthly summary goes (this channel if left empty)",
+        required: false, channel_types: [0, 5, 10, 11, 12],
+      },
+    ],
+  },
+  {
+    name: "uma_summary",
+    description: "Show the club's fans for a month, compared with the month before",
+    type: 1,
+    contexts: [0],
+    options: [
+      {
+        type: 3, name: "month", description: "Which month", required: false,
+        choices: [{ name: "This month", value: "this" }, { name: "Last month", value: "last" }],
+      },
+    ],
+  },
 ];
 
 // Same list as DEFAULT_BLACKLIST in umabot/config.py; * is a wildcard.
@@ -504,6 +539,76 @@ const COMMAND_HANDLERS = {
     });
   },
 
+  async uma_fans(interaction, env) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    const options = optionValues(interaction);
+    const fans = parseFans(options.fans);
+    if (fans === null) {
+      return reply("Hmm… I didn't understand that number. Try something like `32.5m`, `850k` or `32500000`!", { ephemeral: true });
+    }
+    let target = { id: userOf(interaction).id, name: displayName(interaction.member, userOf(interaction)) };
+    if (options.member && options.member !== target.id) {
+      if (!canManageServer(interaction)) {
+        return reply("Only people with Manage Server can save fans for someone else.", { ephemeral: true });
+      }
+      const resolved = interaction.data.resolved ?? {};
+      target = { id: options.member, name: displayName(resolved.members?.[options.member], resolved.users?.[options.member]) };
+    }
+    const settings = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
+    const month = localNow(new Date(), settings.timeZone).day.slice(0, 7);
+    await saveFans(env, interaction.guild_id, month, target, fans);
+    const previous = (await loadFans(env, interaction.guild_id, previousMonth(month)))[target.id];
+    const who = target.id === userOf(interaction).id ? "your" : `<@${target.id}>'s`;
+    let text = `Saved ${who} **${formatFans(fans)}** fans for ${monthName(month)} 💚`;
+    if (previous) text += ` (${change(fans, previous.fans)} vs ${monthName(previousMonth(month))})`;
+    const quota = settings.club?.quota;
+    if (quota) {
+      text += fans >= quota
+        ? `\n✅ That's the ${formatFans(quota)} quota done. Great job, trainer!`
+        : `\n🏃 ${formatFans(quota - fans)} to go to reach the ${formatFans(quota)} quota. You can do it!`;
+    }
+    return reply(text, { ephemeral: true });
+  },
+
+  async uma_quota(interaction, env) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    const options = optionValues(interaction);
+    const quota = parseFans(options.fans);
+    if (!quota) {
+      return reply("Hmm… I didn't understand that number. Try something like `30m`!", { ephemeral: true });
+    }
+    const current = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
+    const month = localNow(new Date(), current.timeZone).day.slice(0, 7);
+    const club = {
+      ...current.club,
+      quota,
+      channelId: options.channel || interaction.channel_id,
+      // Starting now: the first summary covers this month, not ones from before.
+      lastSummary: current.club?.lastSummary ?? previousMonth(month),
+    };
+    await updateGuild(env, interaction.guild_id, { club });
+    return reply(
+      `Got it! The quota is **${formatFans(quota)}** fans per member each month 💚\n` +
+      `On the 1st of every month I'll post last month's summary in <#${club.channelId}>, compared with the month before.\n` +
+      "Everyone can save their fans with `/uma_fans` (like `/uma_fans fans:32.5m`), and see how it's going with `/uma_summary`.",
+      { ephemeral: true },
+    );
+  },
+
+  async uma_summary(interaction, env) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    const settings = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
+    const thisMonth = localNow(new Date(), settings.timeZone).day.slice(0, 7);
+    const month = optionValues(interaction).month === "last" ? previousMonth(thisMonth) : thisMonth;
+    const data = await loadFans(env, interaction.guild_id, month);
+    if (!Object.keys(data).length) {
+      return reply(`Nobody has saved their fans for ${monthName(month)} yet. Use \`/uma_fans\` to add yours!`, { ephemeral: true });
+    }
+    const before = await loadFans(env, interaction.guild_id, previousMonth(month));
+    const embed = clubSummary(month, data, before, settings.club?.quota, { partial: month === thisMonth });
+    return jsonResponse({ type: 4, data: { embeds: [embed], allowed_mentions: { parse: [] } } });
+  },
+
   async uma_cards(interaction, env, ctx, origin) {
     if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
     if (!env.DISCORD_TOKEN) return reply("The Worker needs its DISCORD_TOKEN secret first.", { ephemeral: true });
@@ -584,6 +689,10 @@ const COMMAND_HANDLERS = {
       ? `📆 Monthly message: ${describeMonthly(monthly, settings.timeZone)}, in <#${monthly.channelId}>` +
         (monthly.lastError ? `\n⚠️ Last monthly problem: ${monthly.lastError.slice(0, 300)}` : "")
       : "📆 Monthly message: off (use `/uma_monthly`)");
+    lines.push(settings.club
+      ? `📊 Club quota: ${formatFans(settings.club.quota)} per member; summary on the 1st in <#${settings.club.channelId}>` +
+        (settings.club.lastError ? `\n⚠️ Last summary problem: ${settings.club.lastError.slice(0, 300)}` : "")
+      : "📊 Club quota: off (use `/uma_quota`)");
     return reply(lines.join("\n"), { ephemeral: true });
   },
 };
@@ -625,14 +734,18 @@ export async function runSchedule(env, now = new Date()) {
     const settings = { ...DEFAULT_SETTINGS, ...stored };
     const picture = await postScheduledPicture(env, guildId, settings, now);
     const monthly = await postMonthlyMessage(env, guildId, settings, now);
-    if (picture || monthly) updates[guildId] = { ...picture, ...(monthly ? { monthly } : {}) };
+    const club = await postClubSummary(env, guildId, settings, now);
+    if (picture || monthly || club) {
+      updates[guildId] = { ...picture, ...(monthly ? { monthly } : {}), ...(club ? { club } : {}) };
+    }
   }
   if (Object.keys(updates).length) {
     // Re-read so a settings command run meanwhile isn't overwritten.
     const guilds = await loadGuilds(env);
-    for (const [guildId, { monthly, ...update }] of Object.entries(updates)) {
+    for (const [guildId, { monthly, club, ...update }] of Object.entries(updates)) {
       const current = { ...DEFAULT_SETTINGS, ...guilds[guildId], ...update };
       if (monthly && current.monthly) current.monthly = { ...current.monthly, ...monthly };
+      if (club && current.club) current.club = { ...current.club, ...club };
       guilds[guildId] = current;
     }
     await env.UMA_STATE.put("guilds", JSON.stringify(guilds));
@@ -789,6 +902,149 @@ async function say(interaction, env, channelId, text) {
     result = "Something went wrong, sorry.";
   }
   await sendToDiscord(editUrl, "PATCH", {}, { content: result }).catch(() => {});
+}
+
+// ---- Club fan tracker (/uma_fans, /uma_quota, /uma_summary) --------------------
+
+const MANAGE_SERVER = 0x20n;
+const ADMINISTRATOR = 0x8n;
+// Each report is its own KV key (data in its metadata), so two members saving
+// at the same moment can't overwrite each other; old months expire after a year.
+const FANS_TTL_SECONDS = 400 * 24 * 60 * 60;
+
+function canManageServer(interaction) {
+  try {
+    return (BigInt(interaction.member?.permissions ?? 0) & (MANAGE_SERVER | ADMINISTRATOR)) !== 0n;
+  } catch {
+    return false;
+  }
+}
+
+const displayName = (member, user) =>
+  member?.nick || user?.global_name || member?.user?.global_name || user?.username || member?.user?.username || "Trainer";
+
+// "32.5m", "850k", "1.2b", "32,500,000" or "32 500 000" -> a whole number of fans.
+export function parseFans(text) {
+  const match = String(text ?? "").trim().toLowerCase().replace(/fans?$/, "").trim()
+    .match(/^(\d{1,3}(?:[ ,.]\d{3})+|\d+(?:[.,]\d+)?)\s*([kmb])?$/);
+  if (!match) return null;
+  let [, number, unit] = match;
+  if (/^\d{1,3}([ ,.]\d{3})+$/.test(number) && !unit) {
+    number = number.replace(/[ ,.]/g, ""); // thousands separators
+  } else {
+    number = number.replace(",", ".");
+  }
+  const fans = Math.round(Number(number) * ({ k: 1e3, m: 1e6, b: 1e9 }[unit] ?? 1));
+  return Number.isFinite(fans) && fans >= 0 && fans <= 1e11 ? fans : null;
+}
+
+export function formatFans(fans) {
+  const [value, unit] = fans >= 1e9 ? [fans / 1e9, "B"] : fans >= 1e6 ? [fans / 1e6, "M"] : fans >= 1e3 ? [fans / 1e3, "K"] : [fans, ""];
+  return `${Number(value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2))}${unit}`;
+}
+
+function change(now, before) {
+  if (!before) return "new";
+  const percent = Math.round(((now - before) / before) * 100);
+  return percent > 0 ? `▲ ${percent}%` : percent < 0 ? `▼ ${-percent}%` : "= same";
+}
+
+function previousMonth(month) {
+  const [year, number] = month.split("-").map(Number);
+  return number === 1 ? `${year - 1}-12` : `${year}-${String(number - 1).padStart(2, "0")}`;
+}
+
+const monthName = (month) => `${MONTHS[Number(month.slice(5)) - 1]} ${month.slice(0, 4)}`;
+const fansPrefix = (guildId, month) => `fans:${guildId}:${month}:`;
+
+async function saveFans(env, guildId, month, member, fans) {
+  await env.UMA_STATE.put(fansPrefix(guildId, month) + member.id, "", {
+    metadata: { fans, name: member.name.slice(0, 64) },
+    expirationTtl: FANS_TTL_SECONDS,
+  });
+}
+
+// { userId: { fans, name } } for everyone who reported that month.
+async function loadFans(env, guildId, month) {
+  const prefix = fansPrefix(guildId, month);
+  const result = {};
+  let cursor;
+  do {
+    const page = await env.UMA_STATE.list({ prefix, cursor });
+    for (const key of page.keys) result[key.name.slice(prefix.length)] = key.metadata;
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return result;
+}
+
+const listNames = (entries, limit = 15) =>
+  entries.length <= limit ? entries.join(", ") : `${entries.slice(0, limit).join(", ")} +${entries.length - limit} more`;
+
+export function clubSummary(month, data, before, quota, { partial = false } = {}) {
+  const members = Object.entries(data).map(([id, entry]) => ({ id, ...entry })).sort((a, b) => b.fans - a.fans);
+  const total = members.reduce((sum, m) => sum + m.fans, 0);
+  const totalBefore = Object.values(before).reduce((sum, m) => sum + m.fans, 0);
+  const previous = monthName(previousMonth(month));
+  const lines = [
+    `**Total fans:** ${formatFans(total)}` + (totalBefore ? ` (${change(total, totalBefore)} vs ${previous})` : ""),
+    `**Members reported:** ${members.length}` + (Object.keys(before).length ? ` (${Object.keys(before).length} in ${previous})` : ""),
+  ];
+  if (quota) {
+    const done = members.filter((m) => m.fans >= quota);
+    const doneBefore = Object.values(before).filter((m) => m.fans >= quota).length;
+    lines.push(`**Quota (${formatFans(quota)}):** ${done.length}/${members.length} done` +
+      (Object.keys(before).length ? ` (${doneBefore}/${Object.keys(before).length} in ${previous})` : ""));
+  }
+  lines.push("", "🏆 **Top fans:** " + members.slice(0, 3).map((m, i) => `${i + 1}. <@${m.id}> ${formatFans(m.fans)}`).join(" · "));
+  const improved = members
+    .filter((m) => before[m.id]?.fans && m.fans > before[m.id].fans)
+    .map((m) => ({ ...m, growth: (m.fans - before[m.id].fans) / before[m.id].fans }))
+    .sort((a, b) => b.growth - a.growth)
+    .slice(0, 3);
+  if (improved.length) {
+    lines.push("📈 **Most improved:** " + improved.map((m) =>
+      `<@${m.id}> ${formatFans(before[m.id].fans)} → ${formatFans(m.fans)} (▲ ${Math.round(m.growth * 100)}%)`).join(" · "));
+  }
+  if (quota) {
+    const done = members.filter((m) => m.fans >= quota).map((m) => `<@${m.id}>`);
+    const notYet = members.filter((m) => m.fans < quota).map((m) => `<@${m.id}> ${formatFans(m.fans)}`);
+    if (done.length) lines.push(`✅ **Quota done:** ${listNames(done)}`);
+    if (notYet.length) lines.push(`${partial ? "🏃 **Still going:**" : "❌ **Quota not reached:**"} ${listNames(notYet)}`);
+  }
+  const missing = Object.keys(before).filter((id) => !data[id]).map((id) => `<@${id}>`);
+  if (missing.length) lines.push(`💤 **No report yet** (reported in ${previous}): ${listNames(missing)}`);
+  return {
+    title: `📊 Club summary for ${monthName(month)}${partial ? " (so far)" : ""}`,
+    description: lines.join("\n").slice(0, 4000),
+    color: EMBED_COLOR,
+    footer: { text: "Save your fans with /uma_fans, like /uma_fans fans:32.5m" },
+  };
+}
+
+// On the 1st (from 12:00, server time), posts last month's summary once.
+async function postClubSummary(env, guildId, settings, now) {
+  const club = settings.club;
+  if (!club?.channelId) return null;
+  const local = localNow(now, settings.timeZone);
+  const month = previousMonth(local.day.slice(0, 7));
+  const due = local.day.endsWith("-01") ? local.time >= "12:00" : true;
+  if (!due || club.lastSummary === month || now.getTime() < (club.retryAfter || 0)) return null;
+  try {
+    const data = await loadFans(env, guildId, month);
+    if (Object.keys(data).length) {
+      const before = await loadFans(env, guildId, previousMonth(month));
+      const res = await fetch(`${API}/channels/${club.channelId}/messages`, {
+        method: "POST",
+        headers: { ...botHeaders(env), "Content-Type": "application/json" },
+        body: JSON.stringify({ embeds: [clubSummary(month, data, before, club.quota)], allowed_mentions: { parse: [] } }),
+      });
+      if (!res.ok) throw new Error(`Discord returned HTTP ${res.status}: ${await res.text()}`);
+    }
+    return { lastSummary: month, lastError: null, retryAfter: 0 };
+  } catch (err) {
+    console.error(`Club summary for server ${guildId} failed: ${err.message}`);
+    return { lastError: err.message, retryAfter: now.getTime() + RETRY_AFTER_MS };
+  }
 }
 
 // ---- Deck builder ----------------------------------------------------------
