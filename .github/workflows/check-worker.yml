@@ -1,0 +1,94 @@
+name: Check Cloudflare Worker
+
+# A health check you can run any time: is the Worker up, does it reject
+# requests that aren't from Discord, can it reach its card data, and what
+# do its saved settings say (summarised, without server or channel IDs).
+on:
+  workflow_dispatch:
+    inputs:
+      address:
+        description: "Worker address"
+        required: true
+        default: "https://belnolight.belnolight.workers.dev"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check it
+        env:
+          ADDRESS: ${{ inputs.address }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: python
+        run: |
+          import json, os, re, urllib.error, urllib.request
+
+          address = os.environ["ADDRESS"].rstrip("/")
+          toml = open("wrangler.toml").read()
+          account = re.search(r'^account_id = "(.+)"', toml, re.M).group(1)
+          namespace = re.search(r'^id = "(.+)"', toml, re.M).group(1)
+          problems = []
+
+          def call(url, method="GET", body=None, headers=None):
+              request = urllib.request.Request(url, data=body, method=method, headers={"User-Agent": "UmamusumeDailyBot-check", **(headers or {})})
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return response.status, response.headers.get("Content-Type", ""), response.read()
+              except urllib.error.HTTPError as err:
+                  return err.code, err.headers.get("Content-Type", ""), err.read()
+              except Exception as err:
+                  return None, "", repr(err).encode()
+
+          def check(label, ok, detail=""):
+              print(("✅ " if ok else "❌ ") + label + (f": {detail}" if detail else ""))
+              if not ok:
+                  problems.append(label)
+
+          status, _, body = call(address + "/")
+          text = body.decode("utf-8", "replace")
+          check("Status page answers", status == 200, f"HTTP {status}")
+          for name in ("DISCORD_PUBLIC_KEY", "DISCORD_TOKEN", "UMA_STATE"):
+              check(f"{name} is set", f"✅ {name}" in text)
+
+          status, _, _ = call(address + "/", "POST", b'{"type":1}', {"Content-Type": "application/json"})
+          check("Rejects requests not signed by Discord", status == 401, f"HTTP {status}")
+          status, _, _ = call(address + "/cards?t=nope")
+          check("Rejects bad card box links", status == 401, f"HTTP {status}")
+
+          url = re.search(r'const CARD_DATA_URL =\s*"([^"]+)"', open("discord-worker/worker.js").read()).group(1)
+          status, _, body = call(url)
+          cards = json.loads(body)["cards"] if status == 200 else []
+          check("Card data loads", status == 200 and len(cards) > 300, f"{len(cards)} cards")
+          status, kind, _ = call("https://umamusu.wiki/Special:FilePath/Support_Card_30028_Icon.png?width=128")
+          check("Card pictures load", status == 200 and kind.startswith("image/"), f"HTTP {status} {kind}")
+
+          if os.environ.get("CLOUDFLARE_API_TOKEN"):
+              api = f"https://api.cloudflare.com/client/v4/accounts/{account}/storage/kv/namespaces/{namespace}"
+              auth = {"Authorization": "Bearer " + os.environ["CLOUDFLARE_API_TOKEN"]}
+              status, _, body = call(api + "/values/guilds", headers=auth)
+              if status == 200:
+                  for n, settings in enumerate(json.loads(body).values(), 1):
+                      summary = {k: settings.get(k) for k in ("enabled", "everyHours", "time", "timeZone", "lastPost", "lastError")}
+                      summary["channel set"] = bool(settings.get("channelId"))
+                      print(f"   Server {n} schedule:", json.dumps(summary, ensure_ascii=False))
+                      check(f"Server {n}: scheduled pictures on", bool(settings.get("enabled") and settings.get("channelId")))
+                      check(f"Server {n}: no posting problem", not settings.get("lastError"), settings.get("lastError") or "")
+              else:
+                  check("Scheduled picture settings saved", False, "none yet (run /uma_here)" if status == 404 else f"HTTP {status}")
+              status, _, body = call(api + "/keys?prefix=cards:", headers=auth)
+              count = len(json.loads(body).get("result", [])) if status == 200 else 0
+              print(f"   Saved card lists: {count}")
+              status, _, body = call(api + "/values/history", headers=auth)
+              posted = len(json.loads(body)) // 2 if status == 200 else 0
+              print(f"   Pictures in post history: about {posted}")
+
+          print()
+          print("All good!" if not problems else f"{len(problems)} problem(s): " + "; ".join(problems))
+          raise SystemExit(1 if problems else 0)
