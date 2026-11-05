@@ -18,10 +18,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("run", "post", "check"),
+        choices=("run", "post", "check", "instagram-prepare", "instagram-publish", "instagram-refresh"),
         default="run",
         help="'run' starts the bot (default); 'post' sends the daily picture through a webhook "
-        "if it's time; 'check' tests the image sources without Discord",
+        "if it's time; 'check' tests the image sources without Discord; "
+        "'instagram-prepare' / 'instagram-publish' / 'instagram-refresh' are for the Instagram account",
     )
     parser.add_argument("--now", action="store_true", help="with 'post': post right away, even if it isn't time yet")
     parser.add_argument("--env-file", default=".env", help="file to load settings from (default: .env)")
@@ -39,6 +40,15 @@ def main(argv: list[str] | None = None) -> int:
         from .check import run_check
 
         return asyncio.run(run_check(config))
+    if args.command.startswith("instagram-"):
+        from . import instagram
+
+        run = {
+            "instagram-prepare": instagram.run_prepare,
+            "instagram-publish": instagram.run_publish,
+            "instagram-refresh": instagram.run_refresh,
+        }[args.command]
+        return asyncio.run(run(config))
     if args.command == "post":
         from .webhook import run_post
 

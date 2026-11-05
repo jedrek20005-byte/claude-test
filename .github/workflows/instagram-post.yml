@@ -1,0 +1,94 @@
+name: Instagram post
+
+on:
+  schedule:
+    - cron: "41 7,17 * * *" # twice a day (UTC); edit to post more or less often
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Pick and prepare a picture but don't post it (the picture is shown in the run log)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # the picture needs a public link, and the post history is saved
+
+concurrency:
+  group: instagram-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+      INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+      INSTAGRAM_HASHTAGS: ${{ vars.INSTAGRAM_HASHTAGS }}
+      SOURCES: ${{ vars.SOURCES }}
+      EXTRA_BLACKLIST_TAGS: ${{ vars.EXTRA_BLACKLIST_TAGS || 'comic,4koma,monochrome' }}
+      MIN_SCORE: ${{ vars.MIN_SCORE || '0' }}
+      DANBOORU_LOGIN: ${{ secrets.DANBOORU_LOGIN }}
+      DANBOORU_API_KEY: ${{ secrets.DANBOORU_API_KEY }}
+      GELBOORU_USER_ID: ${{ secrets.GELBOORU_USER_ID }}
+      GELBOORU_API_KEY: ${{ secrets.GELBOORU_API_KEY }}
+      ZEROCHAN_USERNAME: ${{ vars.ZEROCHAN_USERNAME }}
+      STATE_FILE: state/instagram.json
+      # Instagram only ever posts "general" rated pictures.
+      ALLOW_SENSITIVE: "false"
+    steps:
+      - name: Check setup
+        run: |
+          if [ -z "$INSTAGRAM_USER_ID" ] || [ -z "$INSTAGRAM_ACCESS_TOKEN" ]; then
+            echo "::warning::Add the INSTAGRAM_USER_ID and INSTAGRAM_ACCESS_TOKEN secrets to start posting (see README)."
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v5
+        if: env.SKIP != '1'
+
+      - uses: actions/setup-python@v6
+        if: env.SKIP != '1'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+        if: env.SKIP != '1'
+
+      - name: Pick a picture
+        if: env.SKIP != '1'
+        run: python -m umabot instagram-prepare
+
+      # Instagram downloads the picture from a public link, so commit it first.
+      # The link contains the commit id, so it can't change after Instagram fetches it.
+      - name: Publish the picture's link
+        if: env.SKIP != '1' && !inputs.dry_run
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f instagram-media
+          git commit -m "Prepare Instagram picture"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+          echo "INSTAGRAM_MEDIA_URL=https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$(git rev-parse HEAD)/instagram-media/current.jpg" >> "$GITHUB_ENV"
+
+      - name: Post to Instagram
+        if: env.SKIP != '1' && !inputs.dry_run
+        run: python -m umabot instagram-publish
+
+      - name: Dry run result
+        if: env.SKIP != '1' && inputs.dry_run
+        run: cat instagram-media/pending.json
+
+      # Always clean up and save the history (also when posting failed, so the
+      # temporary picture doesn't stay in the repo).
+      - name: Save post history and remove the temporary picture
+        if: env.SKIP != '1' && !inputs.dry_run && always()
+        run: |
+          git rm -rq --ignore-unmatch instagram-media
+          [ -f state/instagram.json ] && git add state/instagram.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Update Instagram post history"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"

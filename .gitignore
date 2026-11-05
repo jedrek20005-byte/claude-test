@@ -8,3 +8,4 @@ venv/
 *.egg-info/
 .wrangler/
 node_modules/
+instagram-media/

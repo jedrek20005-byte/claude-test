@@ -119,6 +119,11 @@ class Config:
     gelbooru_user_id: str | None
     gelbooru_api_key: str | None
     zerochan_username: str | None
+    instagram_user_id: str | None = None
+    instagram_access_token: str | None = None
+    instagram_hashtags: tuple[str, ...] = ("umamusume", "umamusumeprettyderby", "ウマ娘", "fanart")
+    instagram_media_url: str | None = None
+    instagram_media_dir: str = "instagram-media"
 
     @property
     def max_rating(self) -> Rating:
@@ -183,4 +188,11 @@ class Config:
             gelbooru_user_id=get("GELBOORU_USER_ID") or None,
             gelbooru_api_key=get("GELBOORU_API_KEY") or None,
             zerochan_username=get("ZEROCHAN_USERNAME") or None,
+            instagram_user_id=get("INSTAGRAM_USER_ID") or None,
+            instagram_access_token=get("INSTAGRAM_ACCESS_TOKEN") or None,
+            instagram_hashtags=tuple(
+                tag.lstrip("#") for tag in _split(get("INSTAGRAM_HASHTAGS", "umamusume,umamusumeprettyderby,ウマ娘,fanart"))
+            ),
+            instagram_media_url=get("INSTAGRAM_MEDIA_URL") or None,
+            instagram_media_dir=get("INSTAGRAM_MEDIA_DIR") or "instagram-media",
         )

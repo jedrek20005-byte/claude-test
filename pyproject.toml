@@ -9,6 +9,7 @@ dependencies = [
     "aiohttp>=3.9,<4",
     "python-dotenv>=1.0",
     "tzdata",
+    "pillow>=10",
 ]
 
 [project.optional-dependencies]

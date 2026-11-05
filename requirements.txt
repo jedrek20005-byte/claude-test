@@ -3,3 +3,4 @@ aiohttp>=3.9,<4
 python-dotenv>=1.0
 # Time zone database for Windows and slim containers.
 tzdata
+pillow>=10

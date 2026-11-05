@@ -38,6 +38,25 @@ The workflow in [`.github/workflows/daily-post.yml`](.github/workflows/daily-pos
 
 After a successful post, the workflow commits the post history to `state/history.json`, so pictures never repeat. These daily commits also stop GitHub from pausing the schedule, which it does in repos with no activity for 60 days. GitHub can start scheduled runs a bit late, so the picture usually arrives within an hour after `POST_TIME`.
 
+## Instagram account (GitHub Actions)
+
+[`.github/workflows/instagram-post.yml`](.github/workflows/instagram-post.yml) posts a random SFW Umamusume picture to an Instagram account twice a day (edit the `cron` line to change that). It uses Instagram's **official API**, so the account is not at risk of being banned for botting. Each caption credits the artist and links the original artwork. It only posts pictures rated *general*.
+
+**One-time setup (you have to do this part yourself, it needs your login):**
+
+1. Create the Instagram account and switch it to a **Professional (Business or Creator)** account: Settings → Account type and tools.
+2. Go to [developers.facebook.com](https://developers.facebook.com), create an app, and add the **Instagram API with Instagram login** product. Add your account as an Instagram tester/test user and accept the invite in Instagram (Settings → Website permissions → Tester invites).
+3. In the app's Instagram settings, generate a token for the account with the `instagram_business_basic` and `instagram_business_content_publish` permissions. Note the **Instagram user ID** shown next to it.
+4. In this repo: Settings → Secrets and variables → Actions, add secrets `INSTAGRAM_USER_ID` and `INSTAGRAM_ACCESS_TOKEN`.
+5. **The repo must be public.** Instagram downloads each picture from a link on `raw.githubusercontent.com`, and the picture is only in the repo for a few seconds.
+6. Test it: Actions → **Instagram post** → **Run workflow** (tick *dry run* first to see the caption without posting).
+
+**Things to know:**
+
+- Tokens last 60 days. Before then, run `python -m umabot instagram-refresh` with `INSTAGRAM_ACCESS_TOKEN` set locally, and paste the printed token into the secret.
+- The API allows about 100 posts per 24 hours; the account is meant for 1–3 a day.
+- The art belongs to its artists. Credit is included, but they haven't agreed to be reposted. Take a picture down if an artist asks, or restrict the sources and tags with the repository variables. Check Instagram's and Cygames' fan-content rules before monetising the account.
+
 ## Slash commands without a computer (Cloudflare Workers)
 
 [`discord-worker/worker.js`](discord-worker/worker.js) is the whole app as a Cloudflare Worker. Discord sends each command to it over HTTPS, and a cron trigger wakes it up for the daily picture, so nothing has to stay online. Cloudflare's free plan is plenty. It uses the same sites and blacklist as the bot.
