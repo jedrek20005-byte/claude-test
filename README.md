@@ -40,13 +40,13 @@ After a successful post, the workflow commits the post history to `state/history
 
 ## Instagram account (GitHub Actions)
 
-[`.github/workflows/instagram-post.yml`](.github/workflows/instagram-post.yml) posts a random SFW Umamusume picture to an Instagram account twice a day (edit the `cron` line to change that). It uses Instagram's **official API**, so the account is not at risk of being banned for botting. Each caption credits the artist and links the original artwork. It only posts pictures rated *general*.
+[`.github/workflows/instagram-post.yml`](.github/workflows/instagram-post.yml) posts SFW Umamusume pictures to an Instagram account, by default twice a day (set the `INSTAGRAM_POSTS_PER_DAY` variable to change that), and [learns what gets the most views](#how-it-learns-what-gets-views). It uses Instagram's **official API**, so the account is not at risk of being banned for botting. Each caption credits the artist and links the original artwork. It only posts pictures rated *general*.
 
 **One-time setup (you have to do this part yourself, it needs your login):**
 
 1. Create the Instagram account and switch it to a **Professional (Business or Creator)** account: Settings → Account type and tools.
 2. Go to [developers.facebook.com](https://developers.facebook.com), create an app, and add the **Instagram API with Instagram login** product. Add your account as an Instagram tester/test user and accept the invite in Instagram (Settings → Website permissions → Tester invites).
-3. In the app's Instagram settings, generate a token for the account with the `instagram_business_basic` and `instagram_business_content_publish` permissions. Note the **Instagram user ID** shown next to it.
+3. In the app's Instagram settings, generate a token for the account with the `instagram_business_basic`, `instagram_business_content_publish` and `instagram_business_manage_insights` permissions (the last one lets it read your views). Note the **Instagram user ID** shown next to it.
 4. In this repo: Settings → Secrets and variables → Actions, add secrets `INSTAGRAM_USER_ID` and `INSTAGRAM_ACCESS_TOKEN`.
 5. **The repo must be public.** Instagram downloads each picture from a link on `raw.githubusercontent.com`, and the picture is only in the repo for a few seconds.
 6. Test it: Actions → **Instagram post** → **Run workflow** (tick *dry run* first to see the caption without posting).
@@ -56,6 +56,17 @@ After a successful post, the workflow commits the post history to `state/history
 - Tokens last 60 days. Before then, run `python -m umabot instagram-refresh` with `INSTAGRAM_ACCESS_TOKEN` set locally, and paste the printed token into the secret.
 - The API allows about 100 posts per 24 hours; the account is meant for 1–3 a day.
 - The art belongs to its artists. Credit is included, but they haven't agreed to be reposted. Take a picture down if an artist asks, or restrict the sources and tags with the repository variables. Check Instagram's and Cygames' fan-content rules before monetising the account.
+
+### How it learns what gets views
+
+The workflow runs every hour. Each run first reads back the views of posts that are at least 2 days old, then decides whether this hour is a posting hour. The algorithm is Thompson sampling, a standard way to balance trying new things against repeating what works:
+
+- **What to post:** each run collects several fresh candidates (`INSTAGRAM_CANDIDATES`, default 6). Every candidate is scored by random draws from what the bot believes about its characters, artist and source, based on past views. The best score wins.
+- **When to post:** each day it picks the `INSTAGRAM_POSTS_PER_DAY` hours (UTC) that look best, the same way, and only posts in those hours.
+- **Exploring:** things with little data get wide draws, so new characters and hours still get tried. The first couple of weeks are close to random; expect real signal after roughly 30 posts.
+- **Where it's stored:** `state/instagram-learning.json`, committed by the workflow. Delete the file to start learning from scratch. The log of each run ends with the best-performing features.
+
+Limits: it only controls *which picture* and *when*. Reach also depends on Instagram's own ranking, your follower count and the hashtags, and with a few posts a day the data is noisy. Views are measured by Instagram's `views` metric (or `reach` if that isn't available for a post).
 
 ## Slash commands without a computer (Cloudflare Workers)
 

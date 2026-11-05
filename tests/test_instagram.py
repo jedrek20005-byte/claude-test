@@ -87,3 +87,14 @@ async def test_publish_reports_api_errors(fake_api, monkeypatch):
     monkeypatch.setattr(instagram, "API", f"{api.base_url}/v21.0")
     with pytest.raises(InstagramError, match="Invalid token"):
         await publish_image(api.session, "user1", "bad", "https://x/y.jpg", "hi", poll_seconds=0)
+
+
+async def test_fetch_views_falls_back_to_reach(fake_api, monkeypatch):
+    async def insights(request):
+        if request.query["metric"] == "views":
+            return web.json_response({"error": {"message": "unsupported", "code": 100}}, status=400)
+        return web.json_response({"data": [{"name": "reach", "values": [{"value": 321}]}]})
+
+    api = await fake_api({"/v21.0/m1/insights": insights})
+    monkeypatch.setattr(instagram, "API", f"{api.base_url}/v21.0")
+    assert await instagram.fetch_views(api.session, "m1", "tok") == 321

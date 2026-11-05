@@ -18,13 +18,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("run", "post", "check", "instagram-prepare", "instagram-publish", "instagram-refresh"),
+        choices=("run", "post", "check", "instagram-prepare", "instagram-publish", "instagram-learn", "instagram-refresh"),
         default="run",
         help="'run' starts the bot (default); 'post' sends the daily picture through a webhook "
         "if it's time; 'check' tests the image sources without Discord; "
-        "'instagram-prepare' / 'instagram-publish' / 'instagram-refresh' are for the Instagram account",
+        "'instagram-prepare' / 'instagram-publish' / 'instagram-learn' / 'instagram-refresh' are for the Instagram account",
     )
-    parser.add_argument("--now", action="store_true", help="with 'post': post right away, even if it isn't time yet")
+    parser.add_argument("--now", action="store_true", help="with 'post' or 'instagram-prepare': post right away, even if it isn't time yet")
     parser.add_argument("--env-file", default=".env", help="file to load settings from (default: .env)")
     args = parser.parse_args(argv)
 
@@ -43,9 +43,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command.startswith("instagram-"):
         from . import instagram
 
+        if args.command == "instagram-prepare":
+            return asyncio.run(instagram.run_prepare(config, now=args.now))
         run = {
-            "instagram-prepare": instagram.run_prepare,
             "instagram-publish": instagram.run_publish,
+            "instagram-learn": instagram.run_learn,
             "instagram-refresh": instagram.run_refresh,
         }[args.command]
         return asyncio.run(run(config))

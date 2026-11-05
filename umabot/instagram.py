@@ -15,7 +15,9 @@ import asyncio
 import io
 import json
 import logging
+import random
 import re
+from datetime import datetime
 from pathlib import Path
 
 import aiohttp
@@ -26,9 +28,11 @@ from .config import Config
 from .filters import ContentFilter
 from .formatting import pretty_artist, pretty_character
 from .history import PostHistory
+from .learning import Learning, features_for
 from .models import Image
 from .picker import Picker
 from .posting import download_image, make_session
+from .schedule import utcnow
 from .sources import build_sources, display_name
 
 log = logging.getLogger(__name__)
@@ -104,18 +108,39 @@ def build_caption(image: Image, hashtags: tuple[str, ...]) -> str:
     return caption[:MAX_CAPTION]
 
 
-async def run_prepare(config: Config) -> int:
-    """Pick a picture and write the JPEG + caption. Exit code 0 = ready, 3 = nothing to post."""
+async def _collect_candidates(picker: Picker, wanted: int) -> list[Image]:
+    found: dict[str, Image] = {}
+    for _ in range(wanted * 3):  # the picker may return the same picture again
+        if len(found) >= wanted:
+            break
+        image = await picker.pick()
+        if image is not None:
+            found.setdefault(image.key, image)
+    return list(found.values())
+
+
+async def run_prepare(config: Config, *, now: bool = False, clock: datetime | None = None) -> int:
+    """Pick a picture and write the JPEG + caption, unless it isn't a good time to post.
+
+    Out of several fresh candidates, the learning algorithm picks the one it expects
+    to get the most views. Nothing is written when it's not time to post."""
+    current = clock or utcnow()
+    learning = Learning.load(config.instagram_learning_file)
+    if not now and not learning.should_post(current, config.instagram_posts_per_day):
+        log.info("Not a posting hour (%d/day; today's chosen hours are %s UTC)", config.instagram_posts_per_day,
+                 sorted(learning.best_hours(current.date().isoformat(), config.instagram_posts_per_day)))
+        return 0
+
     history = PostHistory.load(config.state_file)
     folder = Path(config.instagram_media_dir)
+    rng = random.Random()
     async with make_session(config.user_agent) as session:
         content_filter = ContentFilter(config.max_rating, config.blacklist, config.min_score)
         picker = Picker(build_sources(config, session), content_filter, history)
-        for _ in range(5):
-            image = await picker.pick()
-            if image is None:
-                log.error("Couldn't find a picture; the next run will try again")
-                return 1
+        candidates = await _collect_candidates(picker, config.instagram_candidates)
+        while candidates:
+            image = learning.choose(candidates, rng)
+            candidates.remove(image)
             data = None
             for url in dict.fromkeys(u for u in (image.image_url, image.sample_url) if u):
                 data = await download_image(session, url, max_bytes=MAX_SOURCE_BYTES, referer=image.page_url)
@@ -132,17 +157,19 @@ async def run_prepare(config: Config) -> int:
                 continue
             folder.mkdir(parents=True, exist_ok=True)
             (folder / IMAGE_NAME).write_bytes(jpeg)
+            grouped = features_for(image)
             pending = {
                 "source": image.source,
                 "post_id": image.post_id,
                 "md5": image.md5,
                 "page_url": image.page_url,
                 "caption": build_caption(image, config.instagram_hashtags),
+                "features": [f for group in grouped.values() for f in group],
             }
             (folder / PENDING_NAME).write_text(json.dumps(pending, ensure_ascii=False, indent=1), encoding="utf-8")
             log.info("Prepared %s (%d KB)", image.page_url, len(jpeg) // 1024)
             return 0
-    log.error("Every candidate picture was unusable")
+    log.error("Couldn't find a usable picture; the next run will try again")
     return 1
 
 
@@ -206,7 +233,45 @@ async def run_publish(config: Config) -> int:
     history.record(Image(source=pending["source"], post_id=pending["post_id"], image_url="",
                          page_url=pending["page_url"], rating=config.max_rating, md5=pending.get("md5")))
     history.save()
+    learning = Learning.load(config.instagram_learning_file)
+    learning.record_post(media_id, pending.get("features", []), utcnow())
+    learning.save()
     log.info("Posted to Instagram (media %s): %s", media_id, pending["page_url"])
+    return 0
+
+
+async def fetch_views(session: aiohttp.ClientSession, media_id: str, token: str) -> float | None:
+    """How many times a post was seen (falls back to reach, the people who saw it)."""
+    for metric in ("views", "reach"):
+        try:
+            body = await _api(session, "GET", f"{media_id}/insights", metric=metric, access_token=token)
+            return float(body["data"][0]["values"][0]["value"])
+        except InstagramError as exc:
+            log.info("Insight %r unavailable for %s: %s", metric, media_id, exc)
+        except (KeyError, IndexError, TypeError, ValueError):
+            log.info("Unexpected insights reply for %s", media_id)
+    return None
+
+
+async def run_learn(config: Config, *, clock: datetime | None = None) -> int:
+    """Read back the views of old enough posts and learn from them."""
+    if not config.instagram_access_token:
+        log.error("INSTAGRAM_ACCESS_TOKEN must be set")
+        return 2
+    current = clock or utcnow()
+    learning = Learning.load(config.instagram_learning_file)
+    due = learning.due_for_measuring(current)
+    if due:
+        async with make_session(config.user_agent) as session:
+            for post in due:
+                try:
+                    views = await fetch_views(session, post["media_id"], config.instagram_access_token)
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    log.warning("Couldn't reach Instagram: %r", exc)
+                    break
+                learning.record_result(post, views, current)
+        learning.save()
+    log.info("Learning status:\n%s", learning.summary())
     return 0
 
 

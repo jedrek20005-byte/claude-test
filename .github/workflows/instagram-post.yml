@@ -2,8 +2,9 @@ name: Instagram post
 
 on:
   schedule:
-    - cron: "41 7,17 * * *" # twice a day (UTC); edit to post more or less often
-  workflow_dispatch:
+    # Hourly: the bot itself decides which hours of the day to post in (it learns the best ones).
+    - cron: "41 * * * *"
+  workflow_dispatch: # a manual run always posts right away
     inputs:
       dry_run:
         description: "Pick and prepare a picture but don't post it (the picture is shown in the run log)"
@@ -34,6 +35,7 @@ jobs:
       GELBOORU_API_KEY: ${{ secrets.GELBOORU_API_KEY }}
       ZEROCHAN_USERNAME: ${{ vars.ZEROCHAN_USERNAME }}
       STATE_FILE: state/instagram.json
+      INSTAGRAM_POSTS_PER_DAY: ${{ vars.INSTAGRAM_POSTS_PER_DAY || '2' }}
       # Instagram only ever posts "general" rated pictures.
       ALLOW_SENSITIVE: "false"
     steps:
@@ -56,14 +58,23 @@ jobs:
       - run: pip install -r requirements.txt
         if: env.SKIP != '1'
 
+      # Reads the views of posts from 2+ days ago and learns from them.
+      - name: Learn from past posts
+        if: env.SKIP != '1'
+        run: python -m umabot instagram-learn
+
       - name: Pick a picture
         if: env.SKIP != '1'
-        run: python -m umabot instagram-prepare
+        run: |
+          rm -rf instagram-media
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then python -m umabot instagram-prepare --now
+          else python -m umabot instagram-prepare; fi
+          [ -f instagram-media/pending.json ] && echo "READY=1" >> "$GITHUB_ENV" || true
 
       # Instagram downloads the picture from a public link, so commit it first.
       # The link contains the commit id, so it can't change after Instagram fetches it.
       - name: Publish the picture's link
-        if: env.SKIP != '1' && !inputs.dry_run
+        if: env.READY == '1' && !inputs.dry_run
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -74,20 +85,20 @@ jobs:
           echo "INSTAGRAM_MEDIA_URL=https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$(git rev-parse HEAD)/instagram-media/current.jpg" >> "$GITHUB_ENV"
 
       - name: Post to Instagram
-        if: env.SKIP != '1' && !inputs.dry_run
+        if: env.READY == '1' && !inputs.dry_run
         run: python -m umabot instagram-publish
 
       - name: Dry run result
-        if: env.SKIP != '1' && inputs.dry_run
+        if: env.READY == '1' && inputs.dry_run
         run: cat instagram-media/pending.json
 
-      # Always clean up and save the history (also when posting failed, so the
+      # Always clean up and save the history and what was learned (also when posting failed, so the
       # temporary picture doesn't stay in the repo).
       - name: Save post history and remove the temporary picture
         if: env.SKIP != '1' && !inputs.dry_run && always()
         run: |
           git rm -rq --ignore-unmatch instagram-media
-          [ -f state/instagram.json ] && git add state/instagram.json
+          git add state/instagram.json state/instagram-learning.json 2>/dev/null || true
           git diff --cached --quiet && exit 0
           git commit -m "Update Instagram post history"
           git pull --rebase origin "$GITHUB_REF_NAME"

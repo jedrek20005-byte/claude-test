@@ -124,6 +124,9 @@ class Config:
     instagram_hashtags: tuple[str, ...] = ("umamusume", "umamusumeprettyderby", "ウマ娘", "fanart")
     instagram_media_url: str | None = None
     instagram_media_dir: str = "instagram-media"
+    instagram_posts_per_day: int = 2
+    instagram_candidates: int = 6
+    instagram_learning_file: str = "state/instagram-learning.json"
 
     @property
     def max_rating(self) -> Rating:
@@ -195,4 +198,7 @@ class Config:
             ),
             instagram_media_url=get("INSTAGRAM_MEDIA_URL") or None,
             instagram_media_dir=get("INSTAGRAM_MEDIA_DIR") or "instagram-media",
+            instagram_posts_per_day=int(_parse_number("INSTAGRAM_POSTS_PER_DAY", get("INSTAGRAM_POSTS_PER_DAY", ""), 2, int)),
+            instagram_candidates=int(_parse_number("INSTAGRAM_CANDIDATES", get("INSTAGRAM_CANDIDATES", ""), 6, int)),
+            instagram_learning_file=get("INSTAGRAM_LEARNING_FILE") or "state/instagram-learning.json",
         )
