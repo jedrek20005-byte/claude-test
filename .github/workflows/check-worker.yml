@@ -71,6 +71,10 @@ jobs:
           status, kind, _ = call("https://umamusu.wiki/w/thumb.php?f=Support_Card_30028_Icon.png&width=128", headers=browser)
           check("Card pictures load", status == 200 and kind.startswith("image/"), f"HTTP {status} {kind}")
 
+          status, _, body = call(address + "/gifs")
+          found = re.search(r"(\d+) SFW animated posts tagged <code>([^<]+)</code>", body.decode("utf-8", "replace"))
+          check("GIF candidates page", status == 200 and bool(found), f"{found.group(1)} found for {found.group(2)}" if found else f"HTTP {status}")
+
           if os.environ.get("CLOUDFLARE_API_TOKEN"):
               api = f"https://api.cloudflare.com/client/v4/accounts/{account}/storage/kv/namespaces/{namespace}"
               auth = {"Authorization": "Bearer " + os.environ["CLOUDFLARE_API_TOKEN"]}
