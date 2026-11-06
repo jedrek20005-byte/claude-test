@@ -1,0 +1,38 @@
+name: List Belno GIFs
+
+# Temporary: prints the numbered GIFs from the Worker's /gifs page and checks
+# which Tenor sizes load, so the chosen ones can be saved in the Worker.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: List them
+        shell: python
+        run: |
+          import html, json, re, urllib.error, urllib.request
+
+          def get(url, method="GET"):
+              request = urllib.request.Request(url, method=method, headers={"User-Agent": "Mozilla/5.0"})
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return response.status, response.headers.get("Content-Type", ""), response.headers.get("Content-Length"), response.read() if method == "GET" else b""
+              except urllib.error.HTTPError as err:
+                  return err.code, "", None, b""
+
+          page = get("https://belnolight.belnolight.workers.dev/gifs")[3].decode("utf-8", "replace")
+          items = re.findall(r'<div class="n">(\d+)</div><img src="([^"]+)".*?<figcaption>Tenor (.*?) · <a href="([^"]+)">', page)
+          print(len(items), "GIFs")
+          for n, src, title, link in items:
+              sizes = {}
+              for fmt in ("AAAAC", "AAAAd"):
+                  url = re.sub(r"AAAA\w(/[^/]+\.gif)$", fmt + r"\1", src)
+                  status, kind, length, _ = get(url, "HEAD")
+                  sizes[fmt] = f"{status} {kind} {length}"
+              print(json.dumps({"n": int(n), "title": html.unescape(title), "page": html.unescape(link), "src": html.unescape(src), **sizes}, ensure_ascii=False))
