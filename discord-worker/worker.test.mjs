@@ -1012,7 +1012,7 @@ const TENOR_HTML = `<div class="GifList">
 <figure class="GifListItem" data-index="0"><a href="/view/belno-light-uma-musume-cinderella-gray-gif-111"><div class="Gif"><picture>
 <source media="(max-width: 840px)" srcSet="https://media.tenor.com/aaaAAAPo/belno.webm" type="video/webm"/>
 <img src="https://media.tenor.com/aaaAAAAM/belno-light-uma-musume.gif" width="248" alt="Belno Light Uma Musume GIF" style="max-width:248px"/></picture></div></a></figure>
-<figure class="GifListItem" data-index="1"><a href="https://tenor.com/view/belno-happy-gif-222"><img alt="Belno&#x27;s Happy GIF" src="https://media1.tenor.com/m/bbbAAAAC/belno-happy.gif"></a></figure>
+<figure class="GifListItem" data-index="1"><a href="https://tenor.com/view/belno-happy-gif-222"><img alt="Belno&#039;s Happy &amp; Cheerful GIF" src="https://media1.tenor.com/m/bbbAAAAC/belno-happy.gif"></a></figure>
 <figure class="GifListItem" data-index="2"><a href="/view/belno-swimsuit-gif-333"><img src="https://media.tenor.com/cccAAAAM/belno-swimsuit.gif" alt="Belno Swimsuit GIF"></a></figure>
 <figure class="Sticker"><a href="/view/no-image-444">text only</a></figure>
 </div>`;
@@ -1021,7 +1021,7 @@ test("parseTenorPage reads view links, GIF files and titles", async () => {
   const { parseTenorPage } = await import("./worker.js");
   assert.deepEqual(parseTenorPage(TENOR_HTML), [
     { id: "111", url: "https://media.tenor.com/aaaAAAAM/belno-light-uma-musume.gif", page: "https://tenor.com/view/belno-light-uma-musume-cinderella-gray-gif-111", title: "Belno Light Uma Musume" },
-    { id: "222", url: "https://media1.tenor.com/m/bbbAAAAC/belno-happy.gif", page: "https://tenor.com/view/belno-happy-gif-222", title: "Belno's Happy" },
+    { id: "222", url: "https://media1.tenor.com/m/bbbAAAAC/belno-happy.gif", page: "https://tenor.com/view/belno-happy-gif-222", title: "Belno's Happy & Cheerful" },
     { id: "333", url: "https://media.tenor.com/cccAAAAM/belno-swimsuit.gif", page: "https://tenor.com/view/belno-swimsuit-gif-333", title: "Belno Swimsuit" },
   ]);
 });
@@ -1033,7 +1033,7 @@ test("/gifs shows Tenor results first, blacklist applied, without repeats", asyn
   const html = await (await run(new Request("https://x.workers.dev/gifs"))).text();
   assert.match(html, /2 SFW animated posts tagged <code>belno_light_\(umamusume\)<\/code> or found on Tenor/);
   assert.match(html, /<div class="n">1<\/div><img src="https:\/\/media.tenor.com\/aaaAAAAM\/belno-light-uma-musume.gif".*Tenor Belno Light Uma Musume/);
-  assert.match(html, /<div class="n">2<\/div><img src="https:\/\/media1.tenor.com\/m\/bbbAAAAC\/belno-happy.gif".*Tenor Belno&#39;s Happy/);
+  assert.match(html, /<div class="n">2<\/div><img src="https:\/\/media1.tenor.com\/m\/bbbAAAAC\/belno-happy.gif".*Tenor Belno&#39;s Happy &#38; Cheerful/);
   assert.doesNotMatch(html, /swimsuit\.gif/);
   assert.match(html, /Tenor &#34;belno-light&#34;: 3 · Tenor &#34;belno-light-uma-musume&#34;: HTTP 429 from tenor.com/);
 });

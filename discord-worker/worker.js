@@ -1251,7 +1251,9 @@ const GIF_EXTENSIONS = new Set([".gif", ".mp4", ".webm"]);
 const TENOR_SEARCHES = ["belno-light", "belno-light-uma-musume", "belno"];
 
 export function parseTenorPage(html) {
-  const decode = (text) => text.replace(/&(amp|quot|#39|#x27|lt|gt);/g, (_, e) => ({ amp: "&", quot: '"', "#39": "'", "#x27": "'", lt: "<", gt: ">" })[e]);
+  const named = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">" };
+  const decode = (text) => text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, e) =>
+    e[0] !== "#" ? named[e.toLowerCase()] ?? whole : String.fromCodePoint(e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : Number(e.slice(1))));
   const found = [];
   for (const chunk of html.split("<figure").slice(1)) {
     const view = chunk.match(/href="((?:https:\/\/tenor\.com)?\/(?:[a-z-]+\/)?view\/[^"]+)"/);
