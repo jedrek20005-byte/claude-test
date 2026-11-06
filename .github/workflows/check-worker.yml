@@ -78,6 +78,9 @@ jobs:
           notes = re.search(r'<p class="notes">(.*?)</p>', body.decode("utf-8", "replace"))
           if notes:
               print("   GIF sources:", notes.group(1))
+          titles = re.findall(r"<figcaption>(.*?) · <a", body.decode("utf-8", "replace"))
+          if titles:
+              print(f"   GIF titles ({sum('belno' in t.lower() for t in titles)} of {len(titles)} mention Belno):", " | ".join(titles))
 
           if os.environ.get("CLOUDFLARE_API_TOKEN"):
               api = f"https://api.cloudflare.com/client/v4/accounts/{account}/storage/kv/namespaces/{namespace}"
