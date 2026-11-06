@@ -1,0 +1,64 @@
+# Temporary: looks for SFW animated Belno Light posts to pick reaction GIFs from.
+name: Find Belno GIFs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Search
+        shell: python
+        run: |
+          import json, time, urllib.parse, urllib.request
+
+          UA = {"User-Agent": "UmamusumeDailyBot/1.0 (+https://github.com/jedrek20005-byte/claude-test)"}
+
+          def get(url):
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
+                      return json.loads(r.read().decode("utf-8", "replace") or "null")
+              except Exception as e:
+                  print("ERROR", url, repr(e))
+                  return None
+
+          # 1. What is Belno Light's tag called?
+          for site, url in (
+              ("danbooru", "https://danbooru.donmai.us/tags.json?search[name_matches]=*belno*&search[order]=count&limit=10"),
+              ("danbooru-alias", "https://danbooru.donmai.us/tag_aliases.json?search[antecedent_name_matches]=*belno*&limit=10"),
+              ("safebooru", "https://safebooru.org/index.php?page=dapi&s=tag&q=index&json=1&name_pattern=%25belno%25&limit=10"),
+          ):
+              data = get(url)
+              print(f"\n== {site} tags:", json.dumps(data, ensure_ascii=False)[:1500])
+              time.sleep(1)
+
+          # 2. Animated posts for each candidate tag.
+          tags = [t["name"] for t in (get("https://danbooru.donmai.us/tags.json?search[name_matches]=*belno*&search[order]=count&limit=5") or []) if t.get("post_count")]
+          print("\ncandidate tags:", tags)
+          for tag in tags[:2]:
+              for page in (1, 2):
+                  q = urllib.parse.urlencode({"tags": f"{tag} animated", "limit": 100, "page": page})
+                  posts = get(f"https://danbooru.donmai.us/posts.json?{q}") or []
+                  print(f"\n== danbooru '{tag} animated' page {page}: {len(posts)} posts")
+                  for p in posts:
+                      general = set(p.get("tag_string_general", "").split())
+                      hints = [t for t in ("smile", "blush", "crying", "tears", "open_mouth", "waving", "running", "thumbs_up",
+                                           "clapping", "laughing", "angry", "pout", "surprised", "sweat", "eating", "dancing",
+                                           "headpat", "hug", "sleeping", "chibi", "looping_animation") if t in general]
+                      print(f"#{p.get('id')} rating={p.get('rating')} ext={p.get('file_ext')} size={p.get('file_size')} "
+                            f"score={p.get('score')} chars={p.get('tag_string_character')} hints={hints} "
+                            f"url={p.get('file_url')} large={p.get('large_file_url')}")
+                  time.sleep(1)
+                  if len(posts) < 100:
+                      break
+              # Safebooru, same tag
+              q = urllib.parse.urlencode({"page": "dapi", "s": "post", "q": "index", "json": 1, "tags": f"{tag} animated", "limit": 100})
+              posts = get(f"https://safebooru.org/index.php?{q}") or []
+              print(f"\n== safebooru '{tag} animated': {len(posts) if isinstance(posts, list) else posts}")
+              for p in posts if isinstance(posts, list) else []:
+                  print(f"#{p.get('id')} rating={p.get('rating')} image={p.get('image')} file={p.get('file_url')} tags={p.get('tags','')[:160]}")
