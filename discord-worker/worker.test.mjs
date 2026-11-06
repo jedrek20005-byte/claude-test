@@ -996,3 +996,14 @@ test("/gifs lists SFW animated Belno posts, numbered", async () => {
   assert.match(html, /<div class="n">3<\/div><img src="https:\/\/safebooru.org\/images\/1\/10.gif"/);
   assert.doesNotMatch(html, /\/2\.gif|\/4\.gif|5\.png/); // sensitive, blacklisted, not animated
 });
+
+test("/gifs still lists Safebooru when Danbooru refuses", async () => {
+  routes["danbooru.donmai.us"] = () => new Response("blocked", { status: 403 });
+  routes["safebooru.org"] = () => Response.json({ post: [
+    { id: 10, rating: "general", directory: "1", image: "10.gif", tags: "belno_light_(umamusume) animated" },
+  ] });
+  const html = await (await run(new Request("https://x.workers.dev/gifs"))).text();
+  assert.match(html, /1 SFW animated posts tagged <code>belno_light_\(umamusume\)<\/code>/);
+  assert.match(html, /tag search: HTTP 403 from danbooru.donmai.us · Danbooru: HTTP 403 from danbooru.donmai.us · Safebooru: 1 animated/);
+  assert.match(html, /<div class="n">1<\/div><img src="https:\/\/safebooru.org\/images\/1\/10.gif"/);
+});

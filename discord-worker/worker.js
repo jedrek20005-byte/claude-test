@@ -1248,11 +1248,28 @@ async function setupImport(interaction, env, source) {
 const GIF_EXTENSIONS = new Set([".gif", ".mp4", ".webm"]);
 
 async function gifCandidates() {
-  const tags = await getJson("https://danbooru.donmai.us/tags.json?search[name_matches]=*belno*&search[order]=count&limit=5");
-  const tag = (Array.isArray(tags) ? tags : []).find((t) => t.post_count > 0)?.name || "belno_light_(umamusume)";
+  const notes = [];
+  // Look the tag up in case it's spelled differently; Danbooru may refuse the search.
+  let tag = "belno_light_(umamusume)";
+  try {
+    const tags = await getJson("https://danbooru.donmai.us/tags.json?search[name_matches]=*belno*&search[order]=count&limit=5");
+    tag = (Array.isArray(tags) ? tags : []).find((t) => t.post_count > 0)?.name || tag;
+  } catch (err) {
+    notes.push(`tag search: ${err.message}`);
+  }
+  const fetchSite = async (site, url, toCandidate) => {
+    try {
+      const data = await getJson(url);
+      const posts = Array.isArray(data) ? data : data?.post || [];
+      notes.push(`${site}: ${posts.length} animated`);
+      return posts.map(toCandidate);
+    } catch (err) {
+      notes.push(`${site}: ${err.message}`);
+      return [];
+    }
+  };
   const query = new URLSearchParams({ tags: `${tag} animated`, limit: "100" });
-  const danbooru = await getJson(`https://danbooru.donmai.us/posts.json?${query}`).catch(() => []);
-  const fromDanbooru = (Array.isArray(danbooru) ? danbooru : []).map((post) => ({
+  const fromDanbooru = await fetchSite("Danbooru", `https://danbooru.donmai.us/posts.json?${query}`, (post) => ({
     site: "Danbooru", id: String(post.id), rating: { g: 0, s: 1, q: 2, e: 3 }[post.rating] ?? UNKNOWN,
     // Ugoira posts are zip files; their large_file_url is a playable WebM.
     url: [post.file_url, post.large_file_url].find((u) => u && GIF_EXTENSIONS.has(extensionOf(u))),
@@ -1261,15 +1278,17 @@ async function gifCandidates() {
     characters: (post.tag_string_character || "").split(" ").filter(Boolean),
   }));
   const safeQuery = new URLSearchParams({ page: "dapi", s: "post", q: "index", json: "1", tags: `${tag} animated`, limit: "100" });
-  const safe = await getJson(`https://safebooru.org/index.php?${safeQuery}`).catch(() => []);
-  const fromSafebooru = (Array.isArray(safe) ? safe : []).map((post) => ({
-    site: "Safebooru", id: String(post.id),
-    rating: { general: 0, safe: 0, sensitive: 1, questionable: 2, explicit: 3 }[String(post.rating).toLowerCase()] ?? UNKNOWN,
-    url: absolute(post.file_url) || (post.directory && post.image ? `https://safebooru.org/images/${post.directory}/${post.image}` : null),
-    page: `https://safebooru.org/index.php?page=post&s=view&id=${post.id}`,
-    tags: String(post.tags || "").split(" ").filter(Boolean),
-    characters: [],
-  }));
+  const fromSafebooru = await fetchSite("Safebooru", `https://safebooru.org/index.php?${safeQuery}`, (post) => {
+    const tags = String(post.tags || "").split(" ").filter(Boolean);
+    return {
+      site: "Safebooru", id: String(post.id),
+      rating: { general: 0, safe: 0, sensitive: 1, questionable: 2, explicit: 3 }[String(post.rating).toLowerCase()] ?? UNKNOWN,
+      url: absolute(post.file_url) || (post.directory && post.image ? `https://safebooru.org/images/${post.directory}/${post.image}` : null),
+      page: `https://safebooru.org/index.php?page=post&s=view&id=${post.id}`,
+      tags,
+      characters: guessCharacters(tags),
+    };
+  });
   const seen = new Set();
   const list = [...fromDanbooru, ...fromSafebooru].filter((c) => {
     const key = c.url && new URL(c.url).pathname.split("/").pop();
@@ -1277,13 +1296,13 @@ async function gifCandidates() {
     seen.add(key);
     return isSafe({ rating: c.rating, imageUrl: c.url.replace(/\.(mp4|webm)$/, ".gif"), tags: c.tags, score: null });
   });
-  return { tag, list };
+  return { tag, list, notes };
 }
 
 async function gifReviewPage() {
   let body;
   try {
-    const { tag, list } = await gifCandidates();
+    const { tag, list, notes } = await gifCandidates();
     const cards = list.map((c, i) => {
       const media = extensionOf(c.url) === ".gif"
         ? `<img src="${escapeHtml(c.url)}" loading="lazy" referrerpolicy="no-referrer" alt="">`
@@ -1294,7 +1313,7 @@ async function gifReviewPage() {
         ` · <a href="${escapeHtml(c.page)}">post</a></figcaption></figure>`;
     }).join("");
     body = `<h1>Belno GIF candidates</h1><p>${list.length} SFW animated posts tagged <code>${escapeHtml(tag)}</code>. ` +
-      `Tell Claude the numbers you like.</p>` + (cards ? `<div class="grid">${cards}</div>` : "<p>None found.</p>");
+      `Tell Claude the numbers you like.</p><p class="notes">${escapeHtml(notes.join(" · "))}</p>` + (cards ? `<div class="grid">${cards}</div>` : "<p>None found.</p>");
   } catch (err) {
     body = `<p>Couldn't search right now: ${escapeHtml(err.message)}</p>`;
   }
@@ -1304,7 +1323,7 @@ async function gifReviewPage() {
       `h1{font-size:20px;margin:0 0 8px}a{color:#62c271}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}` +
       `figure{margin:0;position:relative;background:#1f241c;border-radius:12px;overflow:hidden}img,video{width:100%;display:block}` +
       `.n{position:absolute;top:6px;left:6px;background:#62c271;color:#000;font-weight:700;border-radius:999px;padding:2px 9px}` +
-      `figcaption{padding:6px 8px;font-size:12px;color:#9aa391}</style></head><body>${body}</body></html>`,
+      `figcaption,.notes{padding:6px 8px;font-size:12px;color:#9aa391}</style></head><body>${body}</body></html>`,
     { headers: { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer", "Cache-Control": "max-age=600" } },
   );
 }
