@@ -73,7 +73,8 @@ jobs:
 
           status, _, body = call(address + "/gifs")
           found = re.search(r"(\d+) SFW animated posts tagged <code>([^<]+)</code>", body.decode("utf-8", "replace"))
-          check("GIF candidates page", status == 200 and bool(found), f"{found.group(1)} found for {found.group(2)}" if found else f"HTTP {status}")
+          page = re.sub(r"<style.*?</style>|<[^>]+>", " ", body.decode("utf-8", "replace"), flags=re.S)
+          check("GIF candidates page", status == 200 and bool(found), f"{found.group(1)} found for {found.group(2)}" if found else f"HTTP {status}: " + " ".join(page.split())[:300])
 
           if os.environ.get("CLOUDFLARE_API_TOKEN"):
               api = f"https://api.cloudflare.com/client/v4/accounts/{account}/storage/kv/namespaces/{namespace}"
