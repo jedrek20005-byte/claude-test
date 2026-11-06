@@ -971,3 +971,28 @@ test("the board is re-read every 30 minutes, and the last day's final board wins
   assert.equal(kv.json("guilds")["777"].club.source.botId, BOT); // the link is kept while its read time updates
   assert.ok(kv.json("guilds")["777"].club.source.lastRead >= Date.parse("2026-12-01T12:30:00Z"));
 });
+
+// ---- /gifs review page -------------------------------------------------------------
+
+test("/gifs lists SFW animated Belno posts, numbered", async () => {
+  routes["danbooru.donmai.us"] = (url) => {
+    if (url.includes("/tags.json")) return Response.json([{ name: "belno_light_(umamusume)", post_count: 900 }]);
+    return Response.json([
+      { id: 1, rating: "g", file_url: "https://cdn.donmai.us/original/aa/1.gif", tag_string: "belno_light_(umamusume) animated smile", tag_string_character: "belno_light_(umamusume) oguri_cap_(umamusume)" },
+      { id: 2, rating: "s", file_url: "https://cdn.donmai.us/original/aa/2.gif", tag_string: "belno_light_(umamusume) animated" },
+      { id: 3, rating: "g", file_url: "https://cdn.donmai.us/original/aa/3.zip", large_file_url: "https://cdn.donmai.us/sample/aa/3.webm", tag_string: "belno_light_(umamusume) animated ugoira" },
+      { id: 4, rating: "g", file_url: "https://cdn.donmai.us/original/aa/4.gif", tag_string: "belno_light_(umamusume) animated swimsuit" },
+      { id: 5, rating: "g", file_url: "https://cdn.donmai.us/original/aa/5.png", tag_string: "belno_light_(umamusume) animated" },
+    ]);
+  };
+  routes["safebooru.org"] = () => Response.json([
+    { id: 9, rating: "general", directory: "1", image: "1.gif", tags: "belno_light_(umamusume) animated" }, // same file as Danbooru #1
+    { id: 10, rating: "general", directory: "1", image: "10.gif", tags: "belno_light_(umamusume) animated" },
+  ]);
+  const html = await (await run(new Request("https://x.workers.dev/gifs"))).text();
+  assert.match(html, /3 SFW animated posts tagged <code>belno_light_\(umamusume\)<\/code>/);
+  assert.match(html, /<div class="n">1<\/div><img src="https:\/\/cdn.donmai.us\/original\/aa\/1.gif".*Danbooru #1 · with Oguri Cap/);
+  assert.match(html, /<div class="n">2<\/div><video src="https:\/\/cdn.donmai.us\/sample\/aa\/3.webm"/);
+  assert.match(html, /<div class="n">3<\/div><img src="https:\/\/safebooru.org\/images\/1\/10.gif"/);
+  assert.doesNotMatch(html, /\/2\.gif|\/4\.gif|5\.png/); // sensitive, blacklisted, not animated
+});

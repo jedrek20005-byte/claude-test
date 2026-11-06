@@ -233,6 +233,9 @@ export default {
     if (request.method === "GET" && url.pathname === "/register") {
       return registerPage(env);
     }
+    if (request.method === "GET" && url.pathname === "/gifs") {
+      return gifReviewPage();
+    }
     if (request.method === "GET" && url.pathname === "/cards") {
       return cardsPage(env, url);
     }
@@ -1236,6 +1239,74 @@ async function setupImport(interaction, env, source) {
     content = `I couldn't read the Live Board yet: ${err.message}\nNothing was changed; run \`/uma_import\` again once that's fixed.`;
   }
   await sendToDiscord(editUrl, "PATCH", {}, { content, allowed_mentions: { parse: [] } }).catch((err) => console.error(err));
+}
+
+// ---- Reaction GIF candidates (/gifs) -------------------------------------------------
+// A page listing SFW animated posts of Belno Light from Danbooru and Safebooru,
+// numbered, so the owner can pick which ones she uses as reaction GIFs.
+
+const GIF_EXTENSIONS = new Set([".gif", ".mp4", ".webm"]);
+
+async function gifCandidates() {
+  const tags = await getJson("https://danbooru.donmai.us/tags.json?search[name_matches]=*belno*&search[order]=count&limit=5");
+  const tag = (Array.isArray(tags) ? tags : []).find((t) => t.post_count > 0)?.name || "belno_light_(umamusume)";
+  const query = new URLSearchParams({ tags: `${tag} animated`, limit: "100" });
+  const danbooru = await getJson(`https://danbooru.donmai.us/posts.json?${query}`).catch(() => []);
+  const fromDanbooru = (Array.isArray(danbooru) ? danbooru : []).map((post) => ({
+    site: "Danbooru", id: String(post.id), rating: { g: 0, s: 1, q: 2, e: 3 }[post.rating] ?? UNKNOWN,
+    // Ugoira posts are zip files; their large_file_url is a playable WebM.
+    url: [post.file_url, post.large_file_url].find((u) => u && GIF_EXTENSIONS.has(extensionOf(u))),
+    page: `https://danbooru.donmai.us/posts/${post.id}`,
+    tags: (post.tag_string || "").split(" ").filter(Boolean),
+    characters: (post.tag_string_character || "").split(" ").filter(Boolean),
+  }));
+  const safeQuery = new URLSearchParams({ page: "dapi", s: "post", q: "index", json: "1", tags: `${tag} animated`, limit: "100" });
+  const safe = await getJson(`https://safebooru.org/index.php?${safeQuery}`).catch(() => []);
+  const fromSafebooru = (Array.isArray(safe) ? safe : []).map((post) => ({
+    site: "Safebooru", id: String(post.id),
+    rating: { general: 0, safe: 0, sensitive: 1, questionable: 2, explicit: 3 }[String(post.rating).toLowerCase()] ?? UNKNOWN,
+    url: absolute(post.file_url) || (post.directory && post.image ? `https://safebooru.org/images/${post.directory}/${post.image}` : null),
+    page: `https://safebooru.org/index.php?page=post&s=view&id=${post.id}`,
+    tags: String(post.tags || "").split(" ").filter(Boolean),
+    characters: [],
+  }));
+  const seen = new Set();
+  const list = [...fromDanbooru, ...fromSafebooru].filter((c) => {
+    const key = c.url && new URL(c.url).pathname.split("/").pop();
+    if (!c.url || !GIF_EXTENSIONS.has(extensionOf(c.url)) || seen.has(key)) return false;
+    seen.add(key);
+    return isSafe({ rating: c.rating, imageUrl: c.url.replace(/\.(mp4|webm)$/, ".gif"), tags: c.tags, score: null });
+  });
+  return { tag, list };
+}
+
+async function gifReviewPage() {
+  let body;
+  try {
+    const { tag, list } = await gifCandidates();
+    const cards = list.map((c, i) => {
+      const media = extensionOf(c.url) === ".gif"
+        ? `<img src="${escapeHtml(c.url)}" loading="lazy" referrerpolicy="no-referrer" alt="">`
+        : `<video src="${escapeHtml(c.url)}" autoplay loop muted playsinline preload="metadata"></video>`;
+      const others = c.characters.filter((ch) => !ch.includes("belno")).map(prettyCharacter);
+      return `<figure><div class="n">${i + 1}</div>${media}<figcaption>${c.site} #${escapeHtml(c.id)}` +
+        (others.length ? ` · with ${escapeHtml(others.slice(0, 3).join(", "))}` : "") +
+        ` · <a href="${escapeHtml(c.page)}">post</a></figcaption></figure>`;
+    }).join("");
+    body = `<h1>Belno GIF candidates</h1><p>${list.length} SFW animated posts tagged <code>${escapeHtml(tag)}</code>. ` +
+      `Tell Claude the numbers you like.</p>` + (cards ? `<div class="grid">${cards}</div>` : "<p>None found.</p>");
+  } catch (err) {
+    body = `<p>Couldn't search right now: ${escapeHtml(err.message)}</p>`;
+  }
+  return new Response(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+      `<title>Belno GIFs</title><style>body{margin:0;padding:16px;font:15px/1.4 system-ui,sans-serif;background:#151813;color:#e8ebe3}` +
+      `h1{font-size:20px;margin:0 0 8px}a{color:#62c271}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}` +
+      `figure{margin:0;position:relative;background:#1f241c;border-radius:12px;overflow:hidden}img,video{width:100%;display:block}` +
+      `.n{position:absolute;top:6px;left:6px;background:#62c271;color:#000;font-weight:700;border-radius:999px;padding:2px 9px}` +
+      `figcaption{padding:6px 8px;font-size:12px;color:#9aa391}</style></head><body>${body}</body></html>`,
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer", "Cache-Control": "max-age=600" } },
+  );
 }
 
 // ---- /uma_test ----------------------------------------------------------------------
