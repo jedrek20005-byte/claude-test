@@ -71,16 +71,17 @@ jobs:
           status, kind, _ = call("https://umamusu.wiki/w/thumb.php?f=Support_Card_30028_Icon.png&width=128", headers=browser)
           check("Card pictures load", status == 200 and kind.startswith("image/"), f"HTTP {status} {kind}")
 
+          # Belno's reaction GIFs (/uma_react) are Tenor links; make sure they still load.
           status, _, body = call(address + "/gifs")
-          found = re.search(r"(\d+) SFW animated posts tagged <code>([^<]+)</code>", body.decode("utf-8", "replace"))
-          page = re.sub(r"<style.*?</style>|<[^>]+>", " ", body.decode("utf-8", "replace"), flags=re.S)
-          check("GIF candidates page", status == 200 and bool(found), f"{found.group(1)} found for {found.group(2)}" if found else f"HTTP {status}: " + " ".join(page.split())[:300])
-          notes = re.search(r'<p class="notes">(.*?)</p>', body.decode("utf-8", "replace"))
-          if notes:
-              print("   GIF sources:", notes.group(1))
-          titles = re.findall(r"<figcaption>(.*?) · <a", body.decode("utf-8", "replace"))
-          if titles:
-              print(f"   GIF titles ({sum('belno' in t.lower() for t in titles)} of {len(titles)} mention Belno):", " | ".join(titles))
+          page = body.decode("utf-8", "replace")
+          used = re.findall(r'<figure><div class="n">(\d+)</div><img src="([^"]+)"', page)
+          broken = []
+          for number, thumb in used:
+              gif_status, kind, _ = call(re.sub(r"AAAAM/", "AAAAd/", thumb), "HEAD", headers=browser)
+              if gif_status != 200 or not kind.startswith("image/"):
+                  broken.append(f"#{number} (HTTP {gif_status})")
+          check("Reaction GIFs load", status == 200 and used and not broken,
+                f"{len(used) - len(broken)}/{len(used)} OK" + (": broken " + ", ".join(broken) if broken else ""))
 
           if os.environ.get("CLOUDFLARE_API_TOKEN"):
               api = f"https://api.cloudflare.com/client/v4/accounts/{account}/storage/kv/namespaces/{namespace}"

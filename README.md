@@ -51,7 +51,7 @@ After a successful post, the workflow commits the post history to `state/history
 | `/uma_off` | Manage Server | pauses scheduled pictures (`/uma_here` turns them back on) |
 | `/uma_status` | Manage Server | shows the channel, schedule, last post and last problem |
 | `/uma_say message:Hi!` | Manage Server | posts the message as the app (leave `message` empty for a multi-line box; `channel:` posts elsewhere; never pings @everyone, @here or roles) |
-| `/uma_monthly day:25 time:18:00 message:…` | Manage Server | posts a message every month, like a club quota reminder (`ping:` mentions a role, `channel:` posts elsewhere; no `message` opens a multi-line box; 29–31 means the last day in shorter months) |
+| `/uma_monthly day:25 time:18:00 message:…` | Manage Server | posts a message every month, like a club quota reminder (`ping:` mentions a role, `channel:` posts elsewhere, `gif:` adds one of Belno's GIFs, a new one each month; no `message` opens a multi-line box; 29–31 means the last day in shorter months) |
 | `/uma_monthly_off` | Manage Server | stops the monthly message |
 | `/uma_import bot:@UmaCore channel:#…` | Manage Server | reads each member's monthly fans from [UmaCore](https://github.com/oHaruki/UmaCore)'s Live Board (default layout) every 30 minutes, instead of `/uma_fans`; `stop:True` turns it off. Needs **Message Content Intent** and View Channel + Read Message History there |
 | `/uma_test what:Monthly reminder` | Manage Server | privately previews the monthly reminder or club summary (an example before anyone reports); `post:True` also sends it in its channel without counting as the real one |
@@ -60,6 +60,9 @@ After a successful post, the workflow commits the post history to `state/history
 | `/uma_summary` | everyone | club summary for this (or last) month: total, quota done/not yet, top fans, most improved, compared with the month before |
 | `/uma_cards` | everyone | private link to your card box: tap the support cards you own and pick their limit break |
 | `/uma_deck goal:Most fans` | everyone | builds your best 5-card deck from your cards (goals: **Most fans**, **Race bonus**) |
+| `/uma_react mood:Happy` | everyone | posts a Belno Light reaction GIF with one of her lines (moods: Happy, Love, Sad, Shocked, Bonk, Sleepy, Hungry, or any); `message:` says something else, `to:` pings someone |
+
+**Reaction GIFs.** Belno's GIFs are Tenor links picked by hand; `<worker address>/gifs` shows them all by number with their mood, plus the ones left out. Change them in `GIFS` in [`discord-worker/worker.js`](discord-worker/worker.js).
 
 **Deck builder.** `/uma_deck` adds up each card's Fan Bonus and Race Bonus at the max level for its limit break. It picks one card per character, as the game requires, and keeps slot 6 free for a borrowed friend card. The card data (`card-data/support-cards.json`) is rebuilt every Monday from the [Umamusume Wiki](https://umamusu.wiki), which reads the game's own master data. The *Update support card data* workflow can also be run by hand after a new banner.
 

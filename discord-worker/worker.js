@@ -48,6 +48,19 @@ const TIME_ZONES = [
 ];
 
 // Settings commands are only shown to people with Manage Server, and only in servers.
+// What Belno says with each kind of GIF ("any" goes with GIFs that have no mood).
+export const MOODS = {
+  happy: { label: "Happy 😊", lines: ["Ehehe~ that makes me really happy! ✨", "Yay! That's wonderful news! 🎉", "I'm smiling so much right now! 💚"] },
+  love: { label: "Love 💕", lines: ["Aww… I love you all so much! 💕", "Come here, you deserve a hug! 🤗", "You're doing amazing, I'm so proud of you! 💚"] },
+  sad: { label: "Sad 😢", lines: ["Eh… that's a little sad… 😢", "Hmph… I'm sulking a little. 😤", "It's okay… we'll do better next time, right? 🥺"] },
+  shocked: { label: "Shocked 😳", lines: ["W-wait, what?! 😳", "Eeeh?! Really?!", "I-I'm not nervous! …okay, maybe a little. 💦"] },
+  bonk: { label: "Bonk 🔨", lines: ["Time to get to work! 🔨", "Behave, or I'm bringing out the hammer! 🔨", "Leave it to me, I'll fix it right up! 🔧"] },
+  sleepy: { label: "Sleepy 💤", lines: ["Mmh… just five more minutes… 💤", "*yawn* Good night, trainers… 🌙"] },
+  hungry: { label: "Hungry 🍙", lines: ["Is it lunch time yet? I'm starving~ 🍙", "Oguri, please save some for me! 🍔"] },
+  any: { label: "Random 🎲", lines: ["Hi trainers, it's Belno! 💚", "Ganbatte, everyone! 🏇✨", "I'm cheering for you! 📣"] },
+};
+const MOOD_CHOICES = Object.entries(MOODS).map(([value, mood]) => ({ name: mood.label, value: value === "any" ? "random" : value }));
+
 const ADMIN_ONLY = { default_member_permissions: "32", contexts: [0] };
 
 const COMMANDS = [
@@ -125,6 +138,7 @@ const COMMANDS = [
         type: 7, name: "channel", description: "Where to post it (this channel if left empty)",
         required: false, channel_types: [0, 5, 10, 11, 12],
       },
+      { type: 3, name: "gif", description: "Add one of my GIFs, a new one each month (none if left empty)", required: false, choices: MOOD_CHOICES },
     ],
   },
   { name: "uma_monthly_off", description: "Stop the monthly message", type: 1, ...ADMIN_ONLY },
@@ -208,6 +222,17 @@ const COMMANDS = [
       },
     ],
   },
+  {
+    name: "uma_react",
+    description: "Post a Belno reaction GIF",
+    type: 1,
+    contexts: [0],
+    options: [
+      { type: 3, name: "mood", description: "What kind of reaction (any if left empty)", required: false, choices: MOOD_CHOICES },
+      { type: 3, name: "message", description: "What I say with it (one of my lines if left empty)", required: false, max_length: 1000 },
+      { type: 6, name: "to", description: "Someone to react to (they get pinged)", required: false },
+    ],
+  },
 ];
 
 // Same list as DEFAULT_BLACKLIST in umabot/config.py; * is a wildcard.
@@ -234,7 +259,7 @@ export default {
       return registerPage(env);
     }
     if (request.method === "GET" && url.pathname === "/gifs") {
-      return gifReviewPage();
+      return gifsPage();
     }
     if (request.method === "GET" && url.pathname === "/cards") {
       return cardsPage(env, url);
@@ -569,6 +594,10 @@ const COMMAND_HANDLERS = {
     });
   },
 
+  uma_react(interaction) {
+    return reactWithGif(interaction);
+  },
+
   uma_test(interaction, env, ctx) {
     if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
     ctx.waitUntil(runTest(interaction, env));
@@ -706,12 +735,13 @@ const COMMAND_HANDLERS = {
     }
     const monthly = {
       day: Number(options.day), time, channelId: options.channel || interaction.channel_id, roleId: options.ping || null,
+      gif: MOOD_CHOICES.some((choice) => choice.value === options.gif) ? options.gif : null,
     };
     if (options.message) {
       return saveMonthly(interaction, env, { ...monthly, text: options.message });
     }
     // No text given: open a box for a longer message, signed like /uma_say's.
-    const id = `${monthly.day}:${time.replace(":", "")}:${monthly.channelId}:${monthly.roleId || 0}`;
+    const id = `${monthly.day}:${time.replace(":", "")}:${monthly.channelId}:${monthly.roleId || 0}:${monthly.gif || 0}`;
     const signature = await sign(env, `uma-monthly:${userOf(interaction).id}:${id}`);
     return jsonResponse({
       type: 9,
@@ -877,7 +907,10 @@ function nextMonthlyDate(monthly, now, timeZone) {
 
 export function describeMonthly(monthly, timeZone, now = new Date()) {
   const ping = monthly.roleId ? `, mentioning ${monthly.roleId === "everyone" ? "@everyone" : `<@&${monthly.roleId}>`}` : "";
-  return `day **${monthly.day}** of every month at **${monthly.time}** (${timeZone})${ping}; ` +
+  const gif = monthly.gif
+    ? `, with ${monthly.gif === "random" ? "one of my GIFs" : `a ${MOODS[monthly.gif]?.label.split(" ")[0].toLowerCase() ?? ""} GIF`}`
+    : "";
+  return `day **${monthly.day}** of every month at **${monthly.time}** (${timeZone})${ping}${gif}; ` +
     `next on ${nextMonthlyDate(monthly, now, timeZone)}`;
 }
 
@@ -888,11 +921,12 @@ const BELNO_REMINDER =
   "I'll be cheering for you the whole way. Ganbatte! 🏇✨";
 
 function monthlyContent(monthly) {
-  if (!monthly.roleId) return { content: monthly.text, allowed_mentions: { parse: [] } };
+  const gif = monthly.gif ? { embeds: [gifEmbed(pickGif(monthly.gif))] } : {};
+  if (!monthly.roleId) return { content: monthly.text, allowed_mentions: { parse: [] }, ...gif };
   if (monthly.roleId === "everyone") {
-    return { content: `@everyone\n${monthly.text}`, allowed_mentions: { parse: ["everyone"] } };
+    return { content: `@everyone\n${monthly.text}`, allowed_mentions: { parse: ["everyone"] }, ...gif };
   }
-  return { content: `<@&${monthly.roleId}>\n${monthly.text}`, allowed_mentions: { parse: [], roles: [monthly.roleId] } };
+  return { content: `<@&${monthly.roleId}>\n${monthly.text}`, allowed_mentions: { parse: [], roles: [monthly.roleId] }, ...gif };
 }
 
 async function saveMonthly(interaction, env, monthly, { now = new Date() } = {}) {
@@ -916,14 +950,16 @@ async function saveMonthly(interaction, env, monthly, { now = new Date() } = {})
 }
 
 async function monthlyFromModal(interaction, env) {
-  const [, day, hhmm, channelId, roleId, signature] = interaction.data.custom_id.split(":");
-  const id = `${day}:${hhmm}:${channelId}:${roleId}`;
+  const [, day, hhmm, channelId, roleId, gif, signature] = interaction.data.custom_id.split(":");
+  const id = `${day}:${hhmm}:${channelId}:${roleId}:${gif}`;
   const text = interaction.data.components?.[0]?.components?.[0]?.value;
   if (signature !== (await sign(env, `uma-monthly:${userOf(interaction).id}:${id}`)) || !text) {
     return reply("That message box didn't come from `/uma_monthly`, so I didn't save it.", { ephemeral: true });
   }
   const time = `${hhmm.slice(0, 2)}:${hhmm.slice(2)}`;
-  return saveMonthly(interaction, env, { day: Number(day), time, channelId, roleId: roleId === "0" ? null : roleId, text });
+  return saveMonthly(interaction, env, {
+    day: Number(day), time, channelId, roleId: roleId === "0" ? null : roleId, gif: gif === "0" ? null : gif, text,
+  });
 }
 
 async function postMonthlyMessage(env, guildId, settings, now) {
@@ -1242,132 +1278,116 @@ async function setupImport(interaction, env, source) {
 }
 
 // ---- Reaction GIF candidates (/gifs) -------------------------------------------------
-// A page listing SFW animated posts of Belno Light from Danbooru and Safebooru,
-// plus Tenor, numbered, so the owner can pick which ones she uses as reaction GIFs.
+// ---- Belno's reaction GIFs (/uma_react, monthly reminder) -------------------------
 
-const GIF_EXTENSIONS = new Set([".gif", ".mp4", ".webm"]);
+// Belno Light GIFs from Tenor, picked by the server owner on the /gifs page.
+// The numbers are that page's, so picks can be changed by number. Files are
+// Tenor's: media.tenor.com/<id><size>/<file>.gif, tenor.com/view/<view>.
+const GIFS = [
+  { n: 1, id: "YfkFzctQb7g", file: "uma-musume-cinderella-gray", view: "uma-musume-cinderella-gray-belno-light-oguri-cap-tamamo-cross-gif-7059680272317444024" },
+  { n: 2, id: "oOZhCF8SHpY", file: "berno-light-sulk", view: "berno-light-sulk-belno-light-uma-musume-uma-musume-cinderella-gray-gif-11594060979294576278", mood: "sad" },
+  { n: 3, id: "pHIA4HrnLHU", file: "ep4-gs", view: "ep4-gs-cinderella-gray-cingray-headpat-gif-11849534533699841141", mood: "love" },
+  { n: 4, id: "tpWYqn_Mq-8", file: "berno-light-pround-smile", view: "berno-light-pround-smile-belno-light-smile-uma-musume-gif-13156589744488754159", mood: "happy" },
+  { n: 5, id: "StWPwzgEMUg", file: "belno-berno-light", view: "belno-berno-light-belno-light-ep7-gs-gif-5392374197467230536" },
+  { n: 6, id: "CxvrOup4CVs", file: "berno-light-berno", view: "berno-light-berno-ep4-gs-cinderella-gray-gif-800491997062760795", mood: "sad" },
+  { n: 7, id: "-QiY6XIuXr4", file: "uma-uma-musume", view: "uma-uma-musume-anime-hammering-hammer-time-gif-17944760843668184766", mood: "bonk" },
+  { n: 8, id: "wWmHzYFP6d0", file: "ep11-cingray", view: "ep11-cingray-cinderella-gray-gs-berno-light-gif-13936819838582254045" },
+  { n: 9, id: "Io-MbzcfZQo", file: "umamusume-oguri-cap", view: "umamusume-oguri-cap-belno-light-evil-and-intimidating-horse-cinderella-gray-gif-2490363528253236490" },
+  { n: 10, id: "GRwhtt5w3Ho", file: "berno-light", view: "berno-light-berno-light-glaring-glare-gif-1809358219595799674", leftOut: true },
+  { n: 11, id: "tuBcdbrllck", file: "gs-ep16", view: "gs-ep16-cingray-cinderella-gray-anime-gif-13177634170402608585" },
+  { n: 12, id: "qPy3dz-UZ9U", file: "belno-berno", view: "belno-berno-light-belno-light-berno-light-gif-12176809215298660309" },
+  { n: 13, id: "jTHjz4F43QY", file: "ep10-cingray", view: "ep10-cingray-cinderella-gray-gs-uma-gif-10174163513576578310", mood: "bonk" },
+  { n: 14, id: "k51ksymLtdM", file: "berno-berno-light", view: "berno-berno-light-uma-cinderella-gray-umamusume-gif-10636768615577925075" },
+  { n: 15, id: "KXLpEDjWQu0", file: "belno-light", view: "belno-light-gif-2986705758782374637" },
+  { n: 16, id: "sPreQsupsIY", file: "cinderella-gray-ep5", view: "cinderella-gray-ep5-gs-pats-berno-light-gif-12752749673319084166", leftOut: true },
+  { n: 17, id: "A3rMU8UdDp8", file: "uma-musume-berno-light", view: "uma-musume-berno-light-belno-light-confuse-uma-musume-cinderella-gray-gif-250737389433851551", mood: "shocked" },
+  { n: 18, id: "vLe4rSPYsVQ", file: "gs-cingray", view: "gs-cingray-cingrey-cinderella-gray-anime-gif-13598540653638758740" },
+  { n: 19, id: "0mFFkrM2rXo", file: "cinderella-gray-ep3", view: "cinderella-gray-ep3-gs-ondo-over-gif-15159474317080046970", leftOut: true },
+  { n: 20, id: "2A6Sbd5ItYc", file: "belno-light-umamusume", view: "belno-light-umamusume-umamusume-cinderella-gray-ice-cube-war-of-the-worlds-gif-15568541962444780935", leftOut: true },
+  { n: 21, id: "qIbTYxwRn10", file: "berno-belno", view: "berno-belno-berno-light-belno-light-ep7-gif-12143625867877261149", leftOut: true },
+  { n: 22, id: "IPorMWZqSiU", file: "oguri-cap-belno-light", view: "oguri-cap-belno-light-ogubel-oguri-belno-gif-2376259244562991653", mood: "love" },
+  { n: 23, id: "xVFhEHXVQOM", file: "uma-musume-umamusume", view: "uma-musume-umamusume-uma-musume-picmix-umamusume-picmix-cinderella-grey-gif-14218252221909647587", leftOut: true },
+  { n: 24, id: "MVlpFHviiB4", file: "berno-light-bored", view: "berno-light-bored-dispoint-belno-light-uma-musume-gif-3555988917484423198", mood: "sad" },
+  { n: 25, id: "wzw0LMZNgjs", file: "ep10-umamusume", view: "ep10-umamusume-cinderella-gray-cingray-gs-gif-14068176702908760635", leftOut: true },
+  { n: 26, id: "AXXWnNV0utg", file: "cinderella-gray-ep6", view: "cinderella-gray-ep6-gs-clear-smile-berno-light-gif-105226135397513944", mood: "happy" },
+  { n: 27, id: "wqdIjSGwdU0", file: "cinderella-gray-berno-light", view: "cinderella-gray-berno-light-belno-light-oguri-cap-uma-musume-gif-14026259335461500237" },
+  { n: 28, id: "st-VwDJYCS8", file: "cinderella-grey-berno-light", view: "cinderella-grey-berno-light-gif-12889185311268538671" },
+  { n: 29, id: "rUOSTsNJGgI", file: "panic-panicap", view: "panic-panicap-oguri-oguri-cap-berno-light-gif-12484983458982599170", mood: "shocked" },
+  { n: 30, id: "XN38JqyvSiM", file: "oguri-cap-berno-light", view: "oguri-cap-berno-light-belno-light-hug-uma-musume-gif-6691781864378550819", mood: "love" },
+  { n: 31, id: "2ebb-vLbKjA", file: "cingray-ep15", view: "cingray-ep15-cinderella-gray-cinderella-gray-gif-15701479021736569392", leftOut: true },
+  { n: 32, id: "JlqPXls42kI", file: "hires-berno", view: "hires-berno-belno-berno-light-belno-light-gif-2763678956765370946" },
+  { n: 33, id: "25AeQzf_JLo", file: "cute-berno", view: "cute-berno-belno-berno-light-belno-light-gif-15821178765003662522", mood: "sleepy" },
+  { n: 34, id: "ssb-_bnMWvM", file: "nervous-berno-light", view: "nervous-berno-light-cinderella-gray-ep2-gs-gif-12882264149837241075", mood: "shocked" },
+  { n: 35, id: "hfRn_H2UIaw", file: "oguri-cap-oguri", view: "oguri-cap-oguri-cap-berno-light-berno-gif-9652454235498095020" },
+  { n: 36, id: "DO4i5JwwaQo", file: "bernonerves-bernosweat", view: "bernonerves-bernosweat-berno-light-umamusume-cinderella-gray-gif-931720538180577546", mood: "shocked" },
+  { n: 37, id: "8MtN8CWETXs", file: "bernotes-berno-light", view: "bernotes-berno-light-berno-learning-cinderella-gray-gif-17351047683191885179" },
+  { n: 38, id: "EPBFedmQFYQ", file: "gs-cingrey", view: "gs-cingrey-cingray-ep17-cinderella-gray-gif-1220551888660862340", leftOut: true },
+  { n: 39, id: "0F1AnUMZsZQ", file: "minecraft-mine", view: "minecraft-mine-craft-uma-uma-musume-gif-15014227776902902164", mood: "bonk" },
+  { n: 40, id: "7_t4Kf-2na8", file: "belno-light-uma-musume", view: "belno-light-uma-musume-umamusume-cinderella-gray-happy-gif-17292547315998301615", mood: "happy" },
+  { n: 41, id: "ZjWyY7cErtc", file: "berno-light-umamusume", view: "berno-light-umamusume-uma-musume-cinderella-gray-honest-reaction-berno-gif-7364988906976358103", leftOut: true },
+  { n: 42, id: "mRi5gd7U1UM", file: "jo-kitahara-kitahara-jo", view: "jo-kitahara-kitahara-jo-belno-belno-light-umamusume-cinderella-gray-gif-11031771254684439875" },
+  { n: 43, id: "F9KXJGlhKQQ", file: "belno-light-oguri-cap", view: "belno-light-oguri-cap-uma-musume-cinderella-gray-gif-1716600590624172292", leftOut: true },
+  { n: 44, id: "Sbk84UOiAaA", file: "cap-oguri-cap", view: "cap-oguri-cap-oguri-gs-ep3-gif-5312344173660209568", leftOut: true },
+  { n: 45, id: "tMrXryBNDWM", file: "berno-light-uma-musume", view: "berno-light-uma-musume-uma-musume-pretty-derby-cinderella-grey-cute-anime-girl-gif-13027462019283750243", leftOut: true },
+  { n: 46, id: "PW9NjHWy_FQ", file: "belno-light-i-love-you", view: "belno-light-i-love-you-ily-berno-light-uma-musume-gif-4426842224393911380", mood: "love" },
+  { n: 47, id: "-wmLhQqJYuM", file: "hat-theft", view: "hat-theft-stealing-obey-obey-san-gif-18089142781833994979", leftOut: true },
+  { n: 48, id: "JjBue-njqqE", file: "umamusume-belno-light", view: "umamusume-belno-light-belno-uma-musume-uma-gif-2751820850807417505", leftOut: true },
+  { n: 49, id: "2pDgAeRqLHM", file: "umamusume-uma-musume", view: "umamusume-uma-musume-oguri-cap-belno-berno-light-gif-15749334195646377075", mood: "hungry" },
+];
+export const REACTION_GIFS = GIFS.filter((gif) => !gif.leftOut);
 
-// Tenor's search page (no API key needed). Discord plays tenor.com/view links as GIFs.
-const TENOR_SEARCHES = ["belno-light", "belno-light-uma-musume", "belno"];
+const pickFrom = (items, random = Math.random) => items[Math.floor(random() * items.length)];
+const gifUrl = (gif, size = "AAAAd") => `https://media.tenor.com/${gif.id}${size}/${gif.file}.gif`;
 
-export function parseTenorPage(html) {
-  const named = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">" };
-  const decode = (text) => text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, e) =>
-    e[0] !== "#" ? named[e.toLowerCase()] ?? whole : String.fromCodePoint(e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : Number(e.slice(1))));
-  const found = [];
-  for (const chunk of html.split("<figure").slice(1)) {
-    const view = chunk.match(/href="((?:https:\/\/tenor\.com)?\/(?:[a-z-]+\/)?view\/[^"]+)"/);
-    const img = chunk.match(/<img\b[^>]*>/);
-    const src = img && img[0].match(/src="(https:\/\/media\d*\.tenor\.com\/[^"]+\.gif)"/);
-    if (!view || !src) continue;
-    const alt = decode(img[0].match(/alt="([^"]*)"/)?.[1] || "");
-    const page = view[1].startsWith("http") ? view[1] : `https://tenor.com${view[1]}`;
-    found.push({ id: page.split("-").pop(), url: src[1], page, title: alt.replace(/\s*GIF$/, "") });
-  }
-  return found;
+// A GIF for the mood ("random" or unknown: any of them).
+export function pickGif(mood, random = Math.random) {
+  const matching = mood && mood !== "any" && MOODS[mood] ? REACTION_GIFS.filter((gif) => gif.mood === mood) : [];
+  return pickFrom(matching.length ? matching : REACTION_GIFS, random);
 }
 
-async function tenorCandidates(notes) {
-  const all = [];
-  for (const term of TENOR_SEARCHES) {
-    try {
-      const res = await fetch(`https://tenor.com/search/${term}-gifs`, {
-        headers: { "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36", "Accept-Language": "en" },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status} from tenor.com`);
-      const found = parseTenorPage(await res.text());
-      notes.push(`Tenor "${term}": ${found.length}`);
-      all.push(...found);
-    } catch (err) {
-      notes.push(`Tenor "${term}": ${err.message}`);
-    }
-  }
-  // Tenor doesn't rate posts like the picture sites; its own search is SFW and the title words go through the blacklist.
-  return all.map((gif) => ({
-    site: "Tenor", id: gif.id, rating: GENERAL, url: gif.url, page: gif.page, title: gif.title,
-    tags: gif.title.toLowerCase().split(/\s+/).filter(Boolean), characters: [],
-  }));
+function belnoLine(gif, random = Math.random) {
+  return pickFrom(MOODS[gif.mood ?? "any"].lines, random);
 }
 
-async function gifCandidates() {
-  const notes = [];
-  // Look the tag up in case it's spelled differently; Danbooru may refuse the search.
-  let tag = "belno_light_(umamusume)";
-  try {
-    const tags = await getJson("https://danbooru.donmai.us/tags.json?search[name_matches]=*belno*&search[order]=count&limit=5");
-    tag = (Array.isArray(tags) ? tags : []).find((t) => t.post_count > 0)?.name || tag;
-  } catch (err) {
-    notes.push(`tag search: ${err.message}`);
-  }
-  const fetchSite = async (site, url, toCandidate) => {
-    try {
-      const data = await getJson(url);
-      const posts = Array.isArray(data) ? data : data?.post || [];
-      notes.push(`${site}: ${posts.length} animated`);
-      return posts.map(toCandidate);
-    } catch (err) {
-      notes.push(`${site}: ${err.message}`);
-      return [];
-    }
-  };
-  const query = new URLSearchParams({ tags: `${tag} animated`, limit: "100" });
-  const fromDanbooru = await fetchSite("Danbooru", `https://danbooru.donmai.us/posts.json?${query}`, (post) => ({
-    site: "Danbooru", id: String(post.id), rating: { g: 0, s: 1, q: 2, e: 3 }[post.rating] ?? UNKNOWN,
-    // Ugoira posts are zip files; their large_file_url is a playable WebM.
-    url: [post.file_url, post.large_file_url].find((u) => u && GIF_EXTENSIONS.has(extensionOf(u))),
-    page: `https://danbooru.donmai.us/posts/${post.id}`,
-    tags: (post.tag_string || "").split(" ").filter(Boolean),
-    characters: (post.tag_string_character || "").split(" ").filter(Boolean),
-  }));
-  const safeQuery = new URLSearchParams({ page: "dapi", s: "post", q: "index", json: "1", tags: `${tag} animated`, limit: "100" });
-  const fromSafebooru = await fetchSite("Safebooru", `https://safebooru.org/index.php?${safeQuery}`, (post) => {
-    const tags = String(post.tags || "").split(" ").filter(Boolean);
-    return {
-      site: "Safebooru", id: String(post.id),
-      rating: { general: 0, safe: 0, sensitive: 1, questionable: 2, explicit: 3 }[String(post.rating).toLowerCase()] ?? UNKNOWN,
-      url: absolute(post.file_url) || (post.directory && post.image ? `https://safebooru.org/images/${post.directory}/${post.image}` : null),
-      page: `https://safebooru.org/index.php?page=post&s=view&id=${post.id}`,
-      tags,
-      characters: guessCharacters(tags),
-    };
+const gifEmbed = (gif) => ({ color: EMBED_COLOR, image: { url: gifUrl(gif) } });
+
+function reactWithGif(interaction) {
+  const options = optionValues(interaction);
+  const gif = pickGif(options.mood);
+  const to = options.to ? `<@${options.to}> ` : "";
+  return jsonResponse({
+    type: 4,
+    data: {
+      content: `${to}${options.message || belnoLine(gif)}`,
+      embeds: [gifEmbed(gif)],
+      // Only the person picked in "to" is pinged, whatever the message says.
+      allowed_mentions: { parse: [], users: options.to ? [options.to] : [] },
+    },
   });
-  const seen = new Set();
-  const fromTenor = await tenorCandidates(notes);
-  const list = [...fromTenor, ...fromDanbooru, ...fromSafebooru].filter((c) => {
-    const key = c.url && new URL(c.url).pathname.split("/").pop();
-    if (!c.url || !GIF_EXTENSIONS.has(extensionOf(c.url)) || seen.has(key)) return false;
-    seen.add(key);
-    return isSafe({ rating: c.rating, imageUrl: c.url.replace(/\.(mp4|webm)$/, ".gif"), tags: c.tags, score: null });
-  });
-  return { tag, list, notes };
 }
 
-async function gifReviewPage() {
-  let body;
-  try {
-    const { tag, list, notes } = await gifCandidates();
-    const cards = list.map((c, i) => {
-      const media = extensionOf(c.url) === ".gif"
-        ? `<img src="${escapeHtml(c.url)}" loading="lazy" referrerpolicy="no-referrer" alt="">`
-        : `<video src="${escapeHtml(c.url)}" autoplay loop muted playsinline preload="metadata"></video>`;
-      const others = c.characters.filter((ch) => !ch.includes("belno")).map(prettyCharacter);
-      return `<figure><div class="n">${i + 1}</div>${media}<figcaption>${c.site} ${c.title ? escapeHtml(c.title) : `#${escapeHtml(c.id)}`}` +
-        (others.length ? ` · with ${escapeHtml(others.slice(0, 3).join(", "))}` : "") +
-        ` · <a href="${escapeHtml(c.page)}">post</a></figcaption></figure>`;
-    }).join("");
-    body = `<h1>Belno GIF candidates</h1><p>${list.length} SFW animated posts tagged <code>${escapeHtml(tag)}</code> or found on Tenor. ` +
-      `Tell Claude the numbers you like.</p><p class="notes">${escapeHtml(notes.join(" · "))}</p>` + (cards ? `<div class="grid">${cards}</div>` : "<p>None found.</p>");
-  } catch (err) {
-    body = `<p>Couldn't search right now: ${escapeHtml(err.message)}</p>`;
-  }
+// Shows every GIF with its number and mood, so picks can be checked and changed by number.
+function gifsPage() {
+  const figure = (gif) =>
+    `<figure${gif.leftOut ? ' class="out"' : ""}><div class="n">${gif.n}</div>` +
+    `<img src="${gifUrl(gif, "AAAAM")}" loading="lazy" referrerpolicy="no-referrer" alt="">` +
+    `<figcaption>${gif.leftOut ? "left out" : MOODS[gif.mood ?? "any"].label.replace("Random", "Any mood")} · ` +
+    `<a href="https://tenor.com/view/${gif.view}">Tenor</a></figcaption></figure>`;
+  const used = REACTION_GIFS;
+  const out = GIFS.filter((gif) => gif.leftOut);
   return new Response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
       `<title>Belno GIFs</title><style>body{margin:0;padding:16px;font:15px/1.4 system-ui,sans-serif;background:#151813;color:#e8ebe3}` +
-      `h1{font-size:20px;margin:0 0 8px}a{color:#62c271}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}` +
-      `figure{margin:0;position:relative;background:#1f241c;border-radius:12px;overflow:hidden}img,video{width:100%;display:block}` +
+      `h1{font-size:20px;margin:0 0 8px}h2{font-size:17px;margin:20px 0 8px}a{color:#62c271}` +
+      `.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}` +
+      `figure{margin:0;position:relative;background:#1f241c;border-radius:12px;overflow:hidden}figure.out{opacity:.45}img{width:100%;display:block}` +
       `.n{position:absolute;top:6px;left:6px;background:#62c271;color:#000;font-weight:700;border-radius:999px;padding:2px 9px}` +
-      `figcaption,.notes{padding:6px 8px;font-size:12px;color:#9aa391}</style></head><body>${body}</body></html>`,
-    { headers: { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer", "Cache-Control": "max-age=600" } },
+      `figcaption{padding:6px 8px;font-size:12px;color:#9aa391}</style></head><body>` +
+      `<h1>Belno's reaction GIFs</h1><p>Used by <code>/uma_react</code> and the monthly reminder. ` +
+      `To change them, tell Claude the numbers, like “add 25, remove 9, 12 is happy”.</p>` +
+      `<h2>In use (${used.length})</h2><div class="grid">${used.map(figure).join("")}</div>` +
+      `<h2>Left out (${out.length})</h2><div class="grid">${out.map(figure).join("")}</div></body></html>`,
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer" } },
   );
 }
 

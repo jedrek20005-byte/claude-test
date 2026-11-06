@@ -5,7 +5,7 @@ import { beforeEach, test } from "node:test";
 import worker, {
   buildDeck, buildEmbed, clearCardCache, clubSummary, deckEmbed, describeSchedule, formatFans, isSafe, localNow,
   makeCardsToken, monthlyDue, parseFans, parseLiveBoard, parseTime, pickImage, postTimes, prettyCharacter, readCardsToken,
-  runSchedule,
+  MOODS, pickGif, REACTION_GIFS, runSchedule,
 } from "./worker.js";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
@@ -94,12 +94,13 @@ test("answers Discord's ping and registers /uma", async () => {
   const commands = JSON.parse(put.init.body);
   assert.deepEqual(commands.map((c) => c.name), [
     "uma", "uma_here", "uma_every", "uma_time", "uma_off", "uma_status", "uma_say", "uma_monthly", "uma_monthly_off",
-    "uma_cards", "uma_deck", "uma_import", "uma_test", "uma_fans", "uma_quota", "uma_summary",
+    "uma_cards", "uma_deck", "uma_import", "uma_test", "uma_fans", "uma_quota", "uma_summary", "uma_react",
   ]);
   assert.equal(commands.find((c) => c.name === "uma_import").default_member_permissions, "32");
   assert.equal(commands.find((c) => c.name === "uma_test").default_member_permissions, "32");
   assert.equal(commands.find((c) => c.name === "uma_quota").default_member_permissions, "32");
   assert.equal(commands.find((c) => c.name === "uma_fans").default_member_permissions, undefined); // for everyone
+  assert.equal(commands.find((c) => c.name === "uma_react").default_member_permissions, undefined);
   for (const command of commands.slice(1, 9)) {
     assert.equal(command.default_member_permissions, "32"); // Manage Server
     assert.deepEqual(command.contexts, [0]); // servers only
@@ -617,7 +618,7 @@ test("/uma_monthly saves the message and shows when it's next sent", async () =>
   const monthly = kv.json("guilds")["777"].monthly;
   assert.deepEqual(
     { ...monthly, lastSent: undefined },
-    { day: 25, time: "18:00", channelId: "555", roleId: "4444", text: "Quota ends soon!\nGo go go", lastSent: undefined, lastError: null, retryAfter: 0 },
+    { day: 25, time: "18:00", channelId: "555", roleId: "4444", gif: null, text: "Quota ends soon!\nGo go go", lastSent: undefined, lastError: null, retryAfter: 0 },
   );
 
   const bad = await (await run(await signedRequest(asUser("uma_monthly", [{ name: "day", value: 5 }, { name: "time", value: "25:00" }, { name: "message", value: "x" }])), env)).json();
@@ -630,7 +631,7 @@ test("/uma_monthly without a message opens a box, and the box saves it", async (
   const env = { ...ENV, UMA_STATE: kv };
   const opened = await (await run(await signedRequest(asUser("uma_monthly", [{ name: "day", value: 1 }, { name: "ping", value: "777" }])), env)).json();
   assert.equal(opened.type, 9);
-  assert.match(opened.data.custom_id, /^uma_monthly:1:1200:555:777:[\w-]{22}$/);
+  assert.match(opened.data.custom_id, /^uma_monthly:1:1200:555:777:0:[\w-]{22}$/);
   assert.match(opened.data.components[0].components[0].value, /it's Belno! 💚/); // pre-filled with Belno's text
   const submit = (custom_id, user = "123456789") => ({
     type: 5, application_id: "4242", token: "interaction-token", guild_id: "777", channel_id: "555",
@@ -972,68 +973,74 @@ test("the board is re-read every 30 minutes, and the last day's final board wins
   assert.ok(kv.json("guilds")["777"].club.source.lastRead >= Date.parse("2026-12-01T12:30:00Z"));
 });
 
-// ---- /gifs review page -------------------------------------------------------------
+// ---- Belno's reaction GIFs ------------------------------------------------------------
 
-test("/gifs lists SFW animated Belno posts, numbered", async () => {
-  routes["danbooru.donmai.us"] = (url) => {
-    if (url.includes("/tags.json")) return Response.json([{ name: "belno_light_(umamusume)", post_count: 900 }]);
-    return Response.json([
-      { id: 1, rating: "g", file_url: "https://cdn.donmai.us/original/aa/1.gif", tag_string: "belno_light_(umamusume) animated smile", tag_string_character: "belno_light_(umamusume) oguri_cap_(umamusume)" },
-      { id: 2, rating: "s", file_url: "https://cdn.donmai.us/original/aa/2.gif", tag_string: "belno_light_(umamusume) animated" },
-      { id: 3, rating: "g", file_url: "https://cdn.donmai.us/original/aa/3.zip", large_file_url: "https://cdn.donmai.us/sample/aa/3.webm", tag_string: "belno_light_(umamusume) animated ugoira" },
-      { id: 4, rating: "g", file_url: "https://cdn.donmai.us/original/aa/4.gif", tag_string: "belno_light_(umamusume) animated swimsuit" },
-      { id: 5, rating: "g", file_url: "https://cdn.donmai.us/original/aa/5.png", tag_string: "belno_light_(umamusume) animated" },
-    ]);
+const GIF_URL = /^https:\/\/media\.tenor\.com\/[\w-]{11}AAAAd\/[\w-]+\.gif$/;
+
+test("the chosen GIFs: 34 in use, each with a known mood", () => {
+  assert.equal(REACTION_GIFS.length, 34);
+  assert.ok(!REACTION_GIFS.some((gif) => [10, 16, 19, 20, 21, 23, 25, 31, 38, 41, 43, 44, 45, 47, 48].includes(gif.n)));
+  for (const gif of REACTION_GIFS) assert.ok(!gif.mood || MOODS[gif.mood], `GIF ${gif.n}`);
+  assert.equal(pickGif("love", () => 0).mood, "love");
+  assert.equal(pickGif("sleepy", () => 0.99).n, 33);
+  assert.equal(pickGif("random", () => 0).n, 1); // any GIF
+  assert.equal(pickGif(undefined, () => 0.999).n, 49);
+});
+
+test("/uma_react posts a GIF of the mood with a Belno line", async () => {
+  const { type, data } = await (await run(await signedRequest(asUser("uma_react", [{ name: "mood", value: "bonk" }])))).json();
+  assert.equal(type, 4);
+  assert.ok(!data.flags); // everyone sees it
+  assert.ok(MOODS.bonk.lines.includes(data.content));
+  assert.match(data.embeds[0].image.url, GIF_URL);
+  const bonk = REACTION_GIFS.filter((gif) => gif.mood === "bonk").map((gif) => gif.id);
+  assert.ok(bonk.some((id) => data.embeds[0].image.url.includes(id)));
+  assert.deepEqual(data.allowed_mentions, { parse: [], users: [] });
+});
+
+test("/uma_react can say something else and ping only the chosen person", async () => {
+  const options = [{ name: "message", value: "Great race @everyone!" }, { name: "to", value: "4321" }];
+  const { data } = await (await run(await signedRequest(asUser("uma_react", options)))).json();
+  assert.equal(data.content, "<@4321> Great race @everyone!");
+  assert.deepEqual(data.allowed_mentions, { parse: [], users: ["4321"] });
+  assert.match(data.embeds[0].image.url, GIF_URL);
+});
+
+test("/gifs shows the GIFs in use and the left-out ones, by number", async () => {
+  const html = await (await run(new Request("https://x.workers.dev/gifs"))).text();
+  assert.match(html, /In use \(34\)/);
+  assert.match(html, /Left out \(15\)/);
+  assert.match(html, /<figure><div class="n">33<\/div><img src="https:\/\/media.tenor.com\/25AeQzf_JLoAAAAM\/cute-berno.gif".*?Sleepy 💤/);
+  assert.match(html, /<figure class="out"><div class="n">10<\/div>.*?left out/);
+});
+
+test("/uma_monthly can add a new GIF each month, also through the message box", async () => {
+  const kv = fakeKV();
+  const env = { ...ENV, UMA_STATE: kv };
+  const options = [{ name: "day", value: 25 }, { name: "message", value: "Quota!" }, { name: "gif", value: "happy" }];
+  const saved = (await (await run(await signedRequest(asUser("uma_monthly", options)), env)).json()).data;
+  assert.match(saved.content, /at \*\*12:00\*\* \(UTC\), with a happy GIF;/);
+  assert.equal(kv.json("guilds")["777"].monthly.gif, "happy");
+
+  const opened = (await (await run(await signedRequest(asUser("uma_monthly", [{ name: "day", value: 2 }, { name: "gif", value: "random" }])), env)).json()).data;
+  assert.match(opened.custom_id, /^uma_monthly:2:1200:555:0:random:[\w-]{22}$/);
+  const submit = {
+    type: 5, application_id: "4242", token: "interaction-token", guild_id: "777", channel_id: "555",
+    member: { user: { id: "123456789" } },
+    data: { custom_id: opened.custom_id, components: [{ type: 1, components: [{ custom_id: "text", value: "Hi!" }] }] },
   };
-  routes["safebooru.org"] = () => Response.json([
-    { id: 9, rating: "general", directory: "1", image: "1.gif", tags: "belno_light_(umamusume) animated" }, // same file as Danbooru #1
-    { id: 10, rating: "general", directory: "1", image: "10.gif", tags: "belno_light_(umamusume) animated" },
-  ]);
-  const html = await (await run(new Request("https://x.workers.dev/gifs"))).text();
-  assert.match(html, /3 SFW animated posts tagged <code>belno_light_\(umamusume\)<\/code>/);
-  assert.match(html, /<div class="n">1<\/div><img src="https:\/\/cdn.donmai.us\/original\/aa\/1.gif".*Danbooru #1 · with Oguri Cap/);
-  assert.match(html, /<div class="n">2<\/div><video src="https:\/\/cdn.donmai.us\/sample\/aa\/3.webm"/);
-  assert.match(html, /<div class="n">3<\/div><img src="https:\/\/safebooru.org\/images\/1\/10.gif"/);
-  assert.doesNotMatch(html, /\/2\.gif|\/4\.gif|5\.png/); // sensitive, blacklisted, not animated
-});
+  const boxed = (await (await run(await signedRequest(submit), env)).json()).data;
+  assert.match(boxed.content, /with one of my GIFs;/);
+  assert.equal(kv.json("guilds")["777"].monthly.gif, "random");
+  // A box whose GIF choice was changed isn't saved.
+  const tampered = { ...submit, data: { ...submit.data, custom_id: opened.custom_id.replace(":random:", ":sad:") } };
+  assert.match((await (await run(await signedRequest(tampered), env)).json()).data.content, /didn't come from/);
 
-test("/gifs still lists Safebooru when Danbooru refuses", async () => {
-  routes["danbooru.donmai.us"] = () => new Response("blocked", { status: 403 });
-  routes["safebooru.org"] = () => Response.json({ post: [
-    { id: 10, rating: "general", directory: "1", image: "10.gif", tags: "belno_light_(umamusume) animated" },
-  ] });
-  const html = await (await run(new Request("https://x.workers.dev/gifs"))).text();
-  assert.match(html, /1 SFW animated posts tagged <code>belno_light_\(umamusume\)<\/code>/);
-  assert.match(html, /tag search: HTTP 403 from danbooru.donmai.us · Danbooru: HTTP 403 from danbooru.donmai.us · Safebooru: 1 animated/);
-  assert.match(html, /<div class="n">1<\/div><img src="https:\/\/safebooru.org\/images\/1\/10.gif"/);
-});
-
-const TENOR_HTML = `<div class="GifList">
-<figure class="GifListItem" data-index="0"><a href="/view/belno-light-uma-musume-cinderella-gray-gif-111"><div class="Gif"><picture>
-<source media="(max-width: 840px)" srcSet="https://media.tenor.com/aaaAAAPo/belno.webm" type="video/webm"/>
-<img src="https://media.tenor.com/aaaAAAAM/belno-light-uma-musume.gif" width="248" alt="Belno Light Uma Musume GIF" style="max-width:248px"/></picture></div></a></figure>
-<figure class="GifListItem" data-index="1"><a href="https://tenor.com/view/belno-happy-gif-222"><img alt="Belno&#039;s Happy &amp; Cheerful GIF" src="https://media1.tenor.com/m/bbbAAAAC/belno-happy.gif"></a></figure>
-<figure class="GifListItem" data-index="2"><a href="/view/belno-swimsuit-gif-333"><img src="https://media.tenor.com/cccAAAAM/belno-swimsuit.gif" alt="Belno Swimsuit GIF"></a></figure>
-<figure class="Sticker"><a href="/view/no-image-444">text only</a></figure>
-</div>`;
-
-test("parseTenorPage reads view links, GIF files and titles", async () => {
-  const { parseTenorPage } = await import("./worker.js");
-  assert.deepEqual(parseTenorPage(TENOR_HTML), [
-    { id: "111", url: "https://media.tenor.com/aaaAAAAM/belno-light-uma-musume.gif", page: "https://tenor.com/view/belno-light-uma-musume-cinderella-gray-gif-111", title: "Belno Light Uma Musume" },
-    { id: "222", url: "https://media1.tenor.com/m/bbbAAAAC/belno-happy.gif", page: "https://tenor.com/view/belno-happy-gif-222", title: "Belno's Happy & Cheerful" },
-    { id: "333", url: "https://media.tenor.com/cccAAAAM/belno-swimsuit.gif", page: "https://tenor.com/view/belno-swimsuit-gif-333", title: "Belno Swimsuit" },
-  ]);
-});
-
-test("/gifs shows Tenor results first, blacklist applied, without repeats", async () => {
-  routes["danbooru.donmai.us"] = () => new Response("blocked", { status: 403 });
-  routes["safebooru.org"] = () => Response.json([]);
-  routes["tenor.com"] = (url) => (url.includes("/search/belno-light-gifs") ? new Response(TENOR_HTML) : new Response("busy", { status: 429 }));
-  const html = await (await run(new Request("https://x.workers.dev/gifs"))).text();
-  assert.match(html, /2 SFW animated posts tagged <code>belno_light_\(umamusume\)<\/code> or found on Tenor/);
-  assert.match(html, /<div class="n">1<\/div><img src="https:\/\/media.tenor.com\/aaaAAAAM\/belno-light-uma-musume.gif".*Tenor Belno Light Uma Musume/);
-  assert.match(html, /<div class="n">2<\/div><img src="https:\/\/media1.tenor.com\/m\/bbbAAAAC\/belno-happy.gif".*Tenor Belno&#39;s Happy &#38; Cheerful/);
-  assert.doesNotMatch(html, /swimsuit\.gif/);
-  assert.match(html, /Tenor &#34;belno-light&#34;: 3 · Tenor &#34;belno-light-uma-musume&#34;: HTTP 429 from tenor.com/);
+  const monthly = { day: 25, time: "18:00", channelId: "555", roleId: null, gif: "sad", text: "Quota!", lastSent: "2026-10" };
+  const posting = fakeKV({ guilds: { 777: { timeZone: "UTC", monthly } } });
+  await runSchedule({ ...ENV, UMA_STATE: posting }, new Date("2026-11-25T18:00:00Z"));
+  const body = JSON.parse(dailyCalls()[0].init.body);
+  assert.equal(body.content, "Quota!");
+  const sad = REACTION_GIFS.filter((gif) => gif.mood === "sad").map((gif) => gif.id);
+  assert.ok(sad.some((id) => body.embeds[0].image.url.includes(id)));
 });
