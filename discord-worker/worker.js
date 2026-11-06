@@ -1243,9 +1243,49 @@ async function setupImport(interaction, env, source) {
 
 // ---- Reaction GIF candidates (/gifs) -------------------------------------------------
 // A page listing SFW animated posts of Belno Light from Danbooru and Safebooru,
-// numbered, so the owner can pick which ones she uses as reaction GIFs.
+// plus Tenor, numbered, so the owner can pick which ones she uses as reaction GIFs.
 
 const GIF_EXTENSIONS = new Set([".gif", ".mp4", ".webm"]);
+
+// Tenor's search page (no API key needed). Discord plays tenor.com/view links as GIFs.
+const TENOR_SEARCHES = ["belno-light", "belno-light-uma-musume", "belno"];
+
+export function parseTenorPage(html) {
+  const decode = (text) => text.replace(/&(amp|quot|#39|#x27|lt|gt);/g, (_, e) => ({ amp: "&", quot: '"', "#39": "'", "#x27": "'", lt: "<", gt: ">" })[e]);
+  const found = [];
+  for (const chunk of html.split("<figure").slice(1)) {
+    const view = chunk.match(/href="((?:https:\/\/tenor\.com)?\/(?:[a-z-]+\/)?view\/[^"]+)"/);
+    const img = chunk.match(/<img\b[^>]*>/);
+    const src = img && img[0].match(/src="(https:\/\/media\d*\.tenor\.com\/[^"]+\.gif)"/);
+    if (!view || !src) continue;
+    const alt = decode(img[0].match(/alt="([^"]*)"/)?.[1] || "");
+    const page = view[1].startsWith("http") ? view[1] : `https://tenor.com${view[1]}`;
+    found.push({ id: page.split("-").pop(), url: src[1], page, title: alt.replace(/\s*GIF$/, "") });
+  }
+  return found;
+}
+
+async function tenorCandidates(notes) {
+  const all = [];
+  for (const term of TENOR_SEARCHES) {
+    try {
+      const res = await fetch(`https://tenor.com/search/${term}-gifs`, {
+        headers: { "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36", "Accept-Language": "en" },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} from tenor.com`);
+      const found = parseTenorPage(await res.text());
+      notes.push(`Tenor "${term}": ${found.length}`);
+      all.push(...found);
+    } catch (err) {
+      notes.push(`Tenor "${term}": ${err.message}`);
+    }
+  }
+  // Tenor doesn't rate posts like the picture sites; its own search is SFW and the title words go through the blacklist.
+  return all.map((gif) => ({
+    site: "Tenor", id: gif.id, rating: GENERAL, url: gif.url, page: gif.page, title: gif.title,
+    tags: gif.title.toLowerCase().split(/\s+/).filter(Boolean), characters: [],
+  }));
+}
 
 async function gifCandidates() {
   const notes = [];
@@ -1290,7 +1330,8 @@ async function gifCandidates() {
     };
   });
   const seen = new Set();
-  const list = [...fromDanbooru, ...fromSafebooru].filter((c) => {
+  const fromTenor = await tenorCandidates(notes);
+  const list = [...fromTenor, ...fromDanbooru, ...fromSafebooru].filter((c) => {
     const key = c.url && new URL(c.url).pathname.split("/").pop();
     if (!c.url || !GIF_EXTENSIONS.has(extensionOf(c.url)) || seen.has(key)) return false;
     seen.add(key);
@@ -1308,11 +1349,11 @@ async function gifReviewPage() {
         ? `<img src="${escapeHtml(c.url)}" loading="lazy" referrerpolicy="no-referrer" alt="">`
         : `<video src="${escapeHtml(c.url)}" autoplay loop muted playsinline preload="metadata"></video>`;
       const others = c.characters.filter((ch) => !ch.includes("belno")).map(prettyCharacter);
-      return `<figure><div class="n">${i + 1}</div>${media}<figcaption>${c.site} #${escapeHtml(c.id)}` +
+      return `<figure><div class="n">${i + 1}</div>${media}<figcaption>${c.site} ${c.title ? escapeHtml(c.title) : `#${escapeHtml(c.id)}`}` +
         (others.length ? ` · with ${escapeHtml(others.slice(0, 3).join(", "))}` : "") +
         ` · <a href="${escapeHtml(c.page)}">post</a></figcaption></figure>`;
     }).join("");
-    body = `<h1>Belno GIF candidates</h1><p>${list.length} SFW animated posts tagged <code>${escapeHtml(tag)}</code>. ` +
+    body = `<h1>Belno GIF candidates</h1><p>${list.length} SFW animated posts tagged <code>${escapeHtml(tag)}</code> or found on Tenor. ` +
       `Tell Claude the numbers you like.</p><p class="notes">${escapeHtml(notes.join(" · "))}</p>` + (cards ? `<div class="grid">${cards}</div>` : "<p>None found.</p>");
   } catch (err) {
     body = `<p>Couldn't search right now: ${escapeHtml(err.message)}</p>`;
