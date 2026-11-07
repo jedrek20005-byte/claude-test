@@ -38,16 +38,15 @@ jobs:
           def load(key):
               return json.loads(get(f"{base}/data/umamusume/{key}.{man[key]}.json")[1])
           inst = load("race_instances")
+          fans = {f["id"]: f["fans"] for f in load("race-fans")}
           normal = [r for r in inst if not r.get("special_race")]
-          print("INSTANCES", len(inst), "normal", len(normal))
-          for r in normal[:2] + [r for r in normal if r.get("details", {}).get("grade") == 100][:1]:
-              print(json.dumps(r, ensure_ascii=False)[:1500])
-          races = load("races")
-          print("RACE", json.dumps(races[0], ensure_ascii=False))
-          print("RACE KEYS", sorted({k for r in races for k in r}))
-          fans = load("race-fans")
-          print("FAN IDS", [f["id"] for f in fans][:80], len(fans))
-          for k in man:
-              if "/" not in k and any(w in k for w in ("chara", "card")):
-                  data = load(k)
-                  print("FILE", k, len(data), json.dumps(data[0] if isinstance(data, list) else data, ensure_ascii=False)[:1500])
+          print("INSTANCES", len(inst), "normal", len(normal), "special", [r["id"] for r in inst if r.get("special_race")])
+          print("INSTANCE KEYS", sorted({k for r in normal for k in r}))
+          from collections import Counter
+          print("GRADES", Counter(r["details"]["grade"] for r in normal))
+          print("YEARS", Counter(r["year"] for r in normal))
+          for r in sorted(normal, key=lambda r: (r["year"], r["month"], r["half"]))[:4] + [r for r in normal if r["details"]["name_en"] in ("Japan Cup", "Arima Kinen", "Tokyo Yushun (Japanese Derby)")]:
+              d = r["details"]
+              print(r["year"], r["month"], r["half"], d["name_en"], d["grade"], d["terrain"], d["distance"], "fans_gain", r["fans_gain"], "needed", r["fans_needed"], "1st", fans.get(r["fans_gain"], [{}])[0], "unreleased", d.get("unreleased_servers"))
+          for i in (1, 20, 29, 40, 61):
+              print("FANSET", i, fans[i][:3])
