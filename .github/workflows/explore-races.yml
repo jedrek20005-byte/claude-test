@@ -32,18 +32,14 @@ jobs:
               page = next(iter(data.get("query", {}).get("pages", {}).values()), {})
               text = page.get("revisions", [{}])[0].get("slots", {}).get("main", {}).get("*", "MISSING")
               print("=====", title, len(text)); print(text[:n])
-          import re
           base = "https://gametora.com"
-          s, body = get(base + "/umamusume/race-scheduler")
-          scripts = re.findall(r'src="(/_next/static/[^"]+)"', body)
-          found = set()
-          for path in scripts:
-              s, js = get(base + path)
-              for m in re.findall(r'["\x27`]([^"\x27`]*(?:/data/|\.json)[^"\x27`]*)["\x27`]', js):
-                  if len(m) < 200: found.add(m)
-              for m in re.finditer(r'(?:fan|Fan)s?["\x27]?\s*[:=]', js):
-                  pass
-          print("DATA REFS", sorted(found)[:120])
-          for cand in ("/data/umamusume/races.json", "/data/umamusume/characters.json", "/data/umamusume/race-programs.json"):
-              s, b = get(base + cand)
-              print("TRY", cand, s, b[:300])
+          s, b = get(base + "/data/manifests/umamusume.json")
+          print("MANIFEST", s, b[:3000])
+          if s == 200:
+              man = json.loads(b)
+              for key, h in man.items():
+                  if any(k in key for k in ("race", "chara", "program", "schedul")):
+                      for path in (f"/data/umamusume/{key}.{h}.json", f"/data/umamusume/{key}/{h}.json"):
+                          s2, b2 = get(base + path)
+                          print("FILE", key, path, s2, len(b2), b2[:1200])
+                          if s2 == 200: break
