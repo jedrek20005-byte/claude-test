@@ -1,7 +1,8 @@
-name: Update support card data
+name: Update support card and race data
 
-# Rebuilds card-data/support-cards.json (used by the /uma_deck command) from
-# the Umamusume Wiki's game data. Runs weekly, or by hand after a new banner.
+# Rebuilds card-data/support-cards.json (for /uma_deck) from the Umamusume Wiki
+# and race-data/races.json (for /uma_races) from GameTora, both from the game's
+# own data. Runs weekly, or by hand after a new banner.
 on:
   schedule:
     - cron: "41 4 * * 1"
@@ -28,16 +29,19 @@ jobs:
       - name: Build the card data
         run: python -m tools.build_card_data --out card-data/support-cards.json
 
+      - name: Build the race data
+        run: python -m tools.build_race_data --out race-data/races.json
+
       - name: Save it
         run: |
-          git add card-data/support-cards.json
+          git add card-data/support-cards.json race-data/races.json
           # The timestamp alone changing isn't worth a commit.
           if git diff --cached --quiet -I '"generated"'; then
-            echo "No card changes."
+            echo "No card or race changes."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Update support card data"
+          git commit -m "Update support card and race data"
           git pull --rebase origin "$GITHUB_REF_NAME"
           git push origin "HEAD:$GITHUB_REF_NAME"
