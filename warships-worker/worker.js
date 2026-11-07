@@ -15,7 +15,20 @@ const EMBED_COLOR = 0x2f80ed;
 const MAX_SOURCES = 15;
 const MAX_SEEN = 150;
 const MAX_POSTS_PER_SOURCE = 5;
-const DEFAULT_SOURCE = { type: "reddit", name: "ModernWarships", filter: "leak, leaks, leaked" };
+const LEAK_WORDS = "leak, leaks, leaked";
+const DEFAULT_SOURCE = { type: "reddit", name: "ModernWarships", filter: LEAK_WORDS };
+// Every known Modern Warships leak source, for /leaks_all: the subreddit and
+// leak YouTubers filtered to leak posts, and the official channels (which
+// announce upcoming ships) unfiltered.
+export const LEAK_SOURCES = [
+  DEFAULT_SOURCE,
+  { type: "youtube", name: "@ibragod", id: "UCWvpqeoGwRMRPbqsNFEPiiA", filter: LEAK_WORDS },
+  { type: "youtube", name: "@LayszCH", id: "UCT-HRG3YZtWqGxKkVy0gLnA", filter: LEAK_WORDS },
+  { type: "youtube", name: "@GUICKNES-FR", filter: LEAK_WORDS },
+  { type: "youtube", name: "@GylaxMW", filter: LEAK_WORDS },
+  { type: "youtube", name: "@ModernWarshipsOfficial", id: "UC1hDoirWXy7vdkuNUo4H_mQ" },
+  { type: "telegram", name: "modernwarships" },
+];
 
 export const SOURCE_TYPES = {
   reddit: { label: "Reddit", icon: "🟠" },
@@ -54,6 +67,13 @@ const COMMANDS = [
     type: 1,
     ...ADMIN_ONLY,
     options: [{ type: 3, name: "name", description: "Which source", required: true, autocomplete: true, max_length: 200 }],
+  },
+  {
+    name: "leaks_all",
+    description: "Watch every known Modern Warships leak source (Reddit, leak YouTubers, official channels)",
+    type: 1,
+    ...ADMIN_ONLY,
+    options: [{ type: 7, name: "channel", description: "Where to post (keeps the current one, or this channel)", required: false, channel_types: [0, 5, 10, 11, 12] }],
   },
   { name: "leaks_list", description: "Show the watched sources and the leaks channel", type: 1, ...ADMIN_ONLY },
   { name: "leaks_test", description: "Post the newest matching post from each source now", type: 1, ...ADMIN_ONLY },
@@ -451,6 +471,40 @@ const HANDLERS = {
       return `Added ${describeSource(source, {})}\n` +
         (newest ? `Newest matching post: **${clip(newest.title || "(no title)", 150)}**` : `None of the ${posts.length} newest posts match yet.`) +
         "\nOnly new posts from now on get posted; use `/leaks_test` to see the newest ones.";
+    });
+  },
+
+  leaks_all(interaction, env, ctx) {
+    return later(ctx, interaction, async () => {
+      const guilds = await loadGuilds(env);
+      const watched = new Set((guilds[interaction.guild_id]?.sources ?? []).map(sourceKey));
+      const added = [];
+      const failed = [];
+      for (const pack of LEAK_SOURCES) {
+        if (watched.has(sourceKey(pack))) continue;
+        const source = { ...pack };
+        try {
+          if (source.type === "youtube" && !source.id) source.id = await youtubeChannelId(source.name);
+          added.push(source);
+        } catch (err) {
+          failed.push(`${sourceLabel(source)} (${err.message})`);
+        }
+      }
+      const channelOption = optionValues(interaction).channel;
+      let full = false;
+      const guild = await updateGuild(env, interaction.guild_id, (current) => {
+        const keys = new Set((current.sources ?? []).map(sourceKey));
+        const fresh = added.filter((source) => !keys.has(sourceKey(source)));
+        const sources = [...(current.sources ?? []), ...fresh].slice(0, MAX_SOURCES);
+        full = sources.length < (current.sources ?? []).length + fresh.length;
+        return { ...current, enabled: true, channelId: channelOption || current.channelId || interaction.channel_id, sources };
+      });
+      return `⚓ Watching every known leak source, posting in <#${guild.channelId}> every 10 minutes:\n` +
+        guild.sources.map((source) => describeSource(source)).join("\n") +
+        (added.length ? "" : "\n(You were already watching all of them.)") +
+        (failed.length ? `\n⚠️ Couldn't add: ${failed.join(", ")}` : "") +
+        (full ? `\n⚠️ I can watch up to ${MAX_SOURCES} sources, so some weren't added.` : "") +
+        "\nOnly new posts from now on get posted; `/leaks_test` shows the newest ones.";
     });
   },
 

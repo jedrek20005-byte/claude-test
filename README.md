@@ -239,6 +239,7 @@ A second, separate Discord app in [`warships-worker/`](warships-worker/worker.js
 | Command | What it does |
 | --- | --- |
 | `/leaks_here` | posts leaks in this channel (or `channel:`), starting with r/ModernWarships posts that mention "leak" |
+| `/leaks_all` | watches every known leak source at once: r/ModernWarships and the leak YouTubers @ibragod, @LayszCH, @GUICKNES-FR and @GylaxMW (leak posts only), plus the official YouTube and Telegram channels (everything); skips ones already watched |
 | `/leaks_add source:YouTube name:@SomeChannel filter:leak` | watches a subreddit, YouTube channel (@handle or link) or Telegram channel (`t.me/name`); `filter:` is comma-separated words, empty means everything |
 | `/leaks_remove name:…` | stops watching a source (autocompletes) |
 | `/leaks_list` | shows the sources, their filters and any problem |

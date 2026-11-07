@@ -4,7 +4,7 @@ import { beforeEach, test } from "node:test";
 
 import worker, {
   decodeEntities, htmlToText, matches, normalizeSource, parseFilter, parseRedditFeed, parseTelegramPage,
-  parseYouTubeFeed, postMessage, runChecks, sourceKey,
+  LEAK_SOURCES, parseYouTubeFeed, postMessage, runChecks, sourceKey,
 } from "./worker.js";
 
 const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
@@ -236,7 +236,7 @@ test("rejects requests not signed by Discord, answers pings and registers comman
   const put = calls.find((c) => c.init.method === "PUT");
   assert.ok(put.url.endsWith("/applications/999/commands"));
   const names = JSON.parse(put.init.body).map((c) => c.name);
-  assert.deepEqual(names, ["leaks_here", "leaks_add", "leaks_remove", "leaks_list", "leaks_test", "leaks_off"]);
+  assert.deepEqual(names, ["leaks_here", "leaks_add", "leaks_remove", "leaks_all", "leaks_list", "leaks_test", "leaks_off"]);
   assert.ok(JSON.parse(put.init.body).every((c) => c.default_member_permissions === "32"));
   const page = await (await run(new Request("https://mwleaks.example.workers.dev/register"))).text();
   assert.match(page, /client_id=999&scope=bot\+applications\.commands&permissions=19456/);
@@ -297,4 +297,28 @@ test("/leaks_test posts the newest matching post from each source", async () => 
   assert.equal(posts().length, 1);
   assert.equal(posts()[0].embeds[0].title, "Old leak");
   assert.match(edits()[0].content, /r\/ModernWarships: posted ✅\nt\.me\/mwleaks: no matching posts right now/);
+});
+
+test("/leaks_all watches every known leak source once, looking up YouTube IDs it doesn't have", async () => {
+  kv = fakeKV({ guilds: guildWith([REDDIT]) });
+  env.LEAKS_STATE = kv;
+  routes["www.youtube.com"] = (url) => (url.endsWith("/@GylaxMW") ? new Response("no channel here") : new Response('{"externalId":"UCabcdefghijklmnopqrstuv"}'));
+  const response = await run(await signed(command("leaks_all")));
+  assert.deepEqual(await response.json(), { type: 5, data: { flags: 64 } });
+  const sources = kv.json("guilds")["777"].sources;
+  assert.equal(sources.length, LEAK_SOURCES.length - 1); // r/ModernWarships was already there; GylaxMW couldn't be found
+  assert.deepEqual(sources.find((s) => s.name === "@GUICKNES-FR"), { type: "youtube", name: "@GUICKNES-FR", filter: "leak, leaks, leaked", id: "UCabcdefghijklmnopqrstuv" });
+  assert.equal(sources.find((s) => s.name === "@ibragod").id, "UCWvpqeoGwRMRPbqsNFEPiiA");
+  const text = edits()[0].content;
+  assert.match(text, /posting in <#555>/);
+  assert.match(text, /YouTube @ibragod\*\* \(only: leak, leaks, leaked\)/);
+  assert.match(text, /t\.me\/modernwarships\*\* \(everything\)/);
+  assert.match(text, /Couldn't add: YouTube @GylaxMW \(Couldn't find the YouTube channel @GylaxMW\)/);
+  assert.equal(calls.filter((c) => c.url.startsWith("https://www.youtube.com/@")).length, 2); // only the two without an ID
+
+  calls = [];
+  routes["www.youtube.com"] = () => new Response('{"externalId":"UCzyxwvutsrqponmlkjihgfe"}'); // GylaxMW found this time
+  await run(await signed(command("leaks_all", [{ name: "channel", value: "600" }])));
+  assert.equal(kv.json("guilds")["777"].sources.length, LEAK_SOURCES.length); // GylaxMW now found, nothing doubled
+  assert.equal(kv.json("guilds")["777"].channelId, "600");
 });
