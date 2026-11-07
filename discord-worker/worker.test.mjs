@@ -1129,3 +1129,11 @@ test("/uma_races plans the races, and the uma option autocompletes", async () =>
     type: 8, data: { choices: [{ name: "Silence Suzuka [Innocent Silence]", value: "100201" }] },
   });
 });
+
+test("without a debut fan count, the debut counts like the smallest Junior Pre-OP win", () => {
+  const data = {
+    debut_fans: 0,
+    races: [race("Newcomer", 1, 7, 2, 1000, { grade: "Pre-OP" }), race("Needs 350", 1, 8, 1, 3100, { needed: 350 })],
+  };
+  assert.deepEqual(planRaces(data, TURF_MEDIUM).races.map((r) => r.name), ["Newcomer", "Needs 350"]);
+});

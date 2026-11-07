@@ -1352,7 +1352,7 @@ export function planRaces(data, uma, { minAptitude = "A", maxInARow = DEFAULT_IN
 
   // Best fans so far for each number of races in a row; more fans is always
   // at least as good, so this finds the best plan.
-  let states = new Map([[1, { fans: data.debut_fans || 0, picks: null }]]); // the debut was just raced
+  let states = new Map([[1, { fans: debutFans(data), picks: null }]]); // the debut was just raced
   for (let turn = FIRST_RACE_TURN; turn < TURNS; turn++) {
     const next = new Map();
     const keep = (inARow, state) => {
@@ -1370,6 +1370,14 @@ export function planRaces(data, uma, { minAptitude = "A", maxInARow = DEFAULT_IN
   const picks = [];
   for (let node = best.picks; node; node = node.prev) picks.unshift(node.race);
   return { races: picks, fans: picks.reduce((sum, race) => sum + race.fans, 0) };
+}
+
+// GameTora has no fan table for the debut; a win there gives about what the
+// smallest Junior Pre-OP race does (enough for the 350 fans the first races need).
+function debutFans(data) {
+  if (data.debut_fans) return data.debut_fans;
+  const preOp = data.races.filter((race) => race.year === 1 && race.grade === "Pre-OP").map((race) => race.fans);
+  return preOp.length ? Math.min(...preOp) : 1000;
 }
 
 export function findUma(data, query) {
