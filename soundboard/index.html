@@ -50,6 +50,7 @@
   </label>
   <label>Volume <input type="range" id="vol" min="0" max="1" step="0.01" value="0.8"></label>
   <label><input type="checkbox" id="mon"> Hear it too</label>
+  <label id="gkWrap" hidden title="Works even when the app is in the background"><input type="checkbox" id="gk"> Global hotkeys (Ctrl+Alt+key)</label>
   <label id="monWrap" hidden>Monitor
     <select id="monDev"></select>
   </label>
@@ -368,6 +369,28 @@ addEventListener('keydown',e=>{
   else if(e.key==='F3'){e.preventDefault();togglePilot()}
 });
 ui();
+
+/* ================= DESKTOP APP (Electron) global hotkeys ================= */
+const native=window.sbNative;
+function syncGlobal(){
+  if(!native)return;
+  const list=[];
+  if(cfg.gk!==false){
+    list.push(['Control+Alt+F2','mic'],['Control+Alt+F3','pilot'],['Control+Alt+Space','stop']);
+    sounds.forEach(s=>{if(s.key&&/^[a-z0-9]$/.test(s.key))list.push(['Control+Alt+'+s.key.toUpperCase(),'play:'+s.id])});
+  }
+  native.setHotkeys(list);
+}
+if(native){
+  $('#gkWrap').hidden=false;$('#gk').checked=cfg.gk!==false;
+  $('#gk').onchange=e=>{cfg.gk=e.target.checked;saveCfg();syncGlobal()};
+  native.onHotkey(a=>{
+    if(a==='mic')toggleMic();else if(a==='pilot')togglePilot();else if(a==='stop')stopAll();
+    else{const s=sounds.find(x=>x.id===a.slice(5));if(s)play(s)}
+  });
+  const _render=render;render=function(){_render();syncGlobal()};
+  document.querySelector('.hint').insertAdjacentHTML('afterbegin','<b>Desktop app:</b> global hotkeys work in any window: <b>Ctrl+Alt+&lt;tile key&gt;</b> plays a sound, <b>Ctrl+Alt+F2</b> mic, <b>Ctrl+Alt+F3</b> fighter pilot, <b>Ctrl+Alt+Space</b> stop all.<br>');
+}
 
 loadAll().then(async r=>{
   sounds=r||[];

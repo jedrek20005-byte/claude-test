@@ -20,3 +20,18 @@ To talk and play sounds at once, route your mic into the cable too (Windows "Lis
 - Other presets: Deep, Chipmunk, Robot, Megaphone, Cave echo. Pilot overrides the selected preset while it is on; turning it off returns to the preset.
 - F2/F3 only work while the soundboard window is focused; click the buttons otherwise.
 - Don't enable "Hear myself" without headphones (feedback).
+
+## Desktop app (Windows / Mac / Linux)
+
+The same soundboard also runs as a standalone desktop app (Electron), with **global hotkeys that work in any window, even in a game**:
+
+| Hotkey | Action |
+|---|---|
+| `Ctrl+Alt+<tile key>` | play that sound |
+| `Ctrl+Alt+F2` | mic → Discord on/off |
+| `Ctrl+Alt+F3` | fighter pilot on/off |
+| `Ctrl+Alt+Space` | stop all sounds |
+
+**Run it:** install [Node.js](https://nodejs.org), then double-click `start-soundboard.bat` (first run installs dependencies), or run `npm install && npm start` in this folder.
+
+**Build a .exe:** `npm install && npm run dist` creates a portable `Soundboard-1.0.0-portable.exe` and an installer in `dist/`. Or run the *Build soundboard app (Windows)* GitHub Action and download the `Soundboard-windows` artifact.

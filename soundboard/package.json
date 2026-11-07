@@ -1,0 +1,22 @@
+{
+  "name": "discord-soundboard",
+  "productName": "Soundboard",
+  "version": "1.0.0",
+  "description": "Soundboard and voice changer for Discord",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "local.discord.soundboard",
+    "productName": "Soundboard",
+    "files": ["main.js", "preload.js", "index.html", "default-sounds.js", "package.json"],
+    "directories": { "output": "dist" },
+    "win": { "target": ["portable", "nsis"], "artifactName": "Soundboard-${version}-${target}.${ext}" }
+  }
+}
