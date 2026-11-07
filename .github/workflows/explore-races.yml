@@ -33,13 +33,21 @@ jobs:
               text = page.get("revisions", [{}])[0].get("slots", {}).get("main", {}).get("*", "MISSING")
               print("=====", title, len(text)); print(text[:n])
           base = "https://gametora.com"
-          s, b = get(base + "/data/manifests/umamusume.json")
-          print("MANIFEST", s, b[:3000])
-          if s == 200:
-              man = json.loads(b)
-              for key, h in man.items():
-                  if any(k in key for k in ("race", "chara", "program", "schedul")):
-                      for path in (f"/data/umamusume/{key}.{h}.json", f"/data/umamusume/{key}/{h}.json"):
-                          s2, b2 = get(base + path)
-                          print("FILE", key, path, s2, len(b2), b2[:1200])
-                          if s2 == 200: break
+          man = json.loads(get(base + "/data/manifests/umamusume.json")[1])
+          print("KEYS", [k for k in man if "/" not in k])
+          def load(key):
+              return json.loads(get(f"{base}/data/umamusume/{key}.{man[key]}.json")[1])
+          inst = load("race_instances")
+          normal = [r for r in inst if not r.get("special_race")]
+          print("INSTANCES", len(inst), "normal", len(normal))
+          for r in normal[:2] + [r for r in normal if r.get("details", {}).get("grade") == 100][:1]:
+              print(json.dumps(r, ensure_ascii=False)[:1500])
+          races = load("races")
+          print("RACE", json.dumps(races[0], ensure_ascii=False))
+          print("RACE KEYS", sorted({k for r in races for k in r}))
+          fans = load("race-fans")
+          print("FAN IDS", [f["id"] for f in fans][:80], len(fans))
+          for k in man:
+              if "/" not in k and any(w in k for w in ("chara", "card")):
+                  data = load(k)
+                  print("FILE", k, len(data), json.dumps(data[0] if isinstance(data, list) else data, ensure_ascii=False)[:1500])
