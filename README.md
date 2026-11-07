@@ -60,7 +60,10 @@ After a successful post, the workflow commits the post history to `state/history
 | `/uma_summary` | everyone | club summary for this (or last) month: total, quota done/not yet, top fans, most improved, compared with the month before |
 | `/uma_cards` | everyone | private link to your card box: tap the support cards you own and pick their limit break |
 | `/uma_deck goal:Most fans` | everyone | builds your best 5-card deck from your cards (goals: **Most fans**, **Race bonus**) |
+| `/uma_races uma:Special Week` | everyone | plans the races that give that Uma the most fans in one career: one per turn, only on surfaces and distances she's A at (`aptitude:` allows B or C), at most 3 in a row (`in_a_row:` 1–6), and only once she has the fans to enter |
 | `/uma_react mood:Happy` | everyone | posts a Belno Light reaction GIF with one of her lines (moods: Happy, Love, Sad, Shocked, Bonk, Sleepy, Hungry, or any); `message:` says something else, `to:` pings someone |
+
+**Race planner.** `/uma_races` uses `race-data/races.json`, rebuilt every Monday from [GameTora](https://gametora.com)'s copy of the game data: every career race's turn, grade, surface, distance, fans for 1st place and fans needed to enter, plus each Uma's aptitudes. It counts fans for winning, before fan bonuses, and doesn't know her career goals, so race those too.
 
 **Reaction GIFs.** Belno's GIFs are Tenor links picked by hand; `<worker address>/gifs` shows them all by number with their mood, plus the ones left out. Change them in `GIFS` in [`discord-worker/worker.js`](discord-worker/worker.js).
 

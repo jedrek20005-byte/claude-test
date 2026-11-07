@@ -66,6 +66,11 @@ jobs:
           status, _, body = call(url)
           cards = json.loads(body)["cards"] if status == 200 else []
           check("Card data loads", status == 200 and len(cards) > 300, f"{len(cards)} cards")
+          url = re.search(r'const RACE_DATA_URL =\s*"([^"]+)"', open("discord-worker/worker.js").read()).group(1)
+          status, _, body = call(url)
+          races = json.loads(body) if status == 200 else {}
+          check("Race data loads", status == 200 and len(races.get("races", [])) > 300,
+                f"{len(races.get('races', []))} races, {len(races.get('umas', []))} Umas")
           browser = {"User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36"}
           # Same picture URL the card box page uses.
           status, kind, _ = call("https://umamusu.wiki/w/thumb.php?f=Support_Card_30028_Icon.png&width=128", headers=browser)

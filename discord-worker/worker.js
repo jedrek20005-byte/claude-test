@@ -161,6 +161,22 @@ const COMMANDS = [
     ],
   },
   {
+    name: "uma_races",
+    description: "Plan the races that give an Uma the most fans in one career",
+    type: 1,
+    options: [
+      { type: 3, name: "uma", description: "Which Uma (start typing her name)", required: true, autocomplete: true, max_length: 100 },
+      {
+        type: 3, name: "aptitude", description: "Lowest surface and distance aptitude to race on (A if left empty)", required: false,
+        choices: [{ name: "A or better", value: "A" }, { name: "B or better", value: "B" }, { name: "C or better", value: "C" }],
+      },
+      {
+        type: 4, name: "in_a_row", description: "Most races in a row (3 if left empty; more risks a bad condition)",
+        required: false, min_value: 1, max_value: 6,
+      },
+    ],
+  },
+  {
     name: "uma_import",
     description: "Read members' fans from another bot's Live Board (like UmaCore) instead of /uma_fans",
     type: 1,
@@ -292,6 +308,9 @@ export default {
     if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("uma_say:")) {
       ctx.waitUntil(sayFromModal(interaction, env));
       return jsonResponse({ type: 5, data: { flags: 64 } });
+    }
+    if (interaction.type === 4) {
+      return autocomplete(interaction, env);
     }
     const handler = interaction.type === 2 && COMMAND_HANDLERS[interaction.data?.name];
     if (handler) {
@@ -592,6 +611,11 @@ const COMMAND_HANDLERS = {
         }],
       },
     });
+  },
+
+  uma_races(interaction, env, ctx) {
+    ctx.waitUntil(answerRaces(interaction, env));
+    return jsonResponse({ type: 5 });
   },
 
   uma_react(interaction) {
@@ -1278,6 +1302,160 @@ async function setupImport(interaction, env, source) {
 }
 
 // ---- Reaction GIF candidates (/gifs) -------------------------------------------------
+// ---- Race scheduler (/uma_races) ---------------------------------------------------
+
+// Built weekly from GameTora by .github/workflows/update-card-data.yml.
+const RACE_DATA_URL =
+  "https://raw.githubusercontent.com/jedrek20005-byte/claude-test/ccr-5787c415-0zgod8/race-data/races.json";
+const APTITUDE_RANK = { S: 7, A: 6, B: 5, C: 4, D: 3, E: 2, F: 1, G: 0 };
+const CAREER_YEARS = ["Junior", "Classic", "Senior"];
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// Turns are half-months: 24 a year. The debut is the second half of June in
+// the Junior year; the regular races start right after it.
+const TURNS = 72;
+const FIRST_RACE_TURN = 12;
+const DEFAULT_IN_A_ROW = 3;
+
+let raceCache = null;
+
+export function clearRaceCache() {
+  raceCache = null;
+}
+
+async function loadRaces(env) {
+  if (raceCache && Date.now() - raceCache.loadedAt < 6 * 60 * 60 * 1000) return raceCache;
+  const res = await fetch(env.RACE_DATA_URL || RACE_DATA_URL, { cf: { cacheTtl: 3600 } });
+  if (!res.ok) throw new Error(`Couldn't load the race data (HTTP ${res.status})`);
+  raceCache = { loadedAt: Date.now(), ...(await res.json()) };
+  return raceCache;
+}
+
+const turnOf = (race) => (race.year - 1) * 24 + (race.month - 1) * 2 + (race.half - 1);
+const umaName = (uma) => `${uma.name}${uma.title ? ` [${uma.title}]` : ""}${uma.jp_only ? " (JP)" : ""}`;
+
+// The races that give the most fans in one career: one per turn, never more
+// than maxInARow in a row, each with good enough surface and distance
+// aptitude, and only once she has the fans to enter. Fans counted are for 1st
+// place, before fan bonuses (which only add to them).
+export function planRaces(data, uma, { minAptitude = "A", maxInARow = DEFAULT_IN_A_ROW } = {}) {
+  const min = APTITUDE_RANK[minAptitude] ?? APTITUDE_RANK.A;
+  const fits = (race) =>
+    (APTITUDE_RANK[uma.aptitude[race.surface]] ?? 0) >= min &&
+    (APTITUDE_RANK[uma.aptitude[race.type]] ?? 0) >= min &&
+    (!race.jp_only || uma.jp_only);
+  const byTurn = Array.from({ length: TURNS }, () => []);
+  for (const race of data.races) {
+    const turn = turnOf(race);
+    if (turn >= FIRST_RACE_TURN && turn < TURNS && fits(race)) byTurn[turn].push(race);
+  }
+  for (const races of byTurn) races.sort((a, b) => b.fans - a.fans);
+
+  // Best fans so far for each number of races in a row; more fans is always
+  // at least as good, so this finds the best plan.
+  let states = new Map([[1, { fans: data.debut_fans || 0, picks: null }]]); // the debut was just raced
+  for (let turn = FIRST_RACE_TURN; turn < TURNS; turn++) {
+    const next = new Map();
+    const keep = (inARow, state) => {
+      if (!next.has(inARow) || next.get(inARow).fans < state.fans) next.set(inARow, state);
+    };
+    for (const [inARow, state] of states) {
+      keep(0, state); // train or rest
+      if (inARow >= maxInARow) continue;
+      const race = byTurn[turn].find((r) => state.fans >= r.needed);
+      if (race) keep(inARow + 1, { fans: state.fans + race.fans, picks: { race, prev: state.picks } });
+    }
+    states = next;
+  }
+  const best = [...states.values()].reduce((a, b) => (b.fans > a.fans ? b : a));
+  const picks = [];
+  for (let node = best.picks; node; node = node.prev) picks.unshift(node.race);
+  return { races: picks, fans: picks.reduce((sum, race) => sum + race.fans, 0) };
+}
+
+export function findUma(data, query) {
+  const text = String(query || "").trim().toLowerCase();
+  if (!text) return null;
+  return data.umas.find((uma) => String(uma.id) === text) ??
+    data.umas.find((uma) => umaName(uma).toLowerCase() === text) ??
+    data.umas.find((uma) => umaName(uma).toLowerCase().includes(text)) ?? null;
+}
+
+// Suggestions while typing the Uma's name (global ones first).
+export function umaChoices(data, query) {
+  const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+  return data.umas
+    .filter((uma) => words.every((word) => umaName(uma).toLowerCase().includes(word)))
+    .sort((a, b) => Number(Boolean(a.jp_only)) - Number(Boolean(b.jp_only)))
+    .slice(0, 25)
+    .map((uma) => ({ name: umaName(uma).slice(0, 100), value: String(uma.id) }));
+}
+
+const shortFans = (fans) => (fans >= 1000 ? `${Math.round(fans / 100) / 10}k` : String(fans));
+
+export function racePlanEmbed(uma, plan, { minAptitude, maxInARow }) {
+  const a = uma.aptitude;
+  const lines = [
+    `Turf **${a.turf}** · Dirt **${a.dirt}** · Short **${a.short}** · Mile **${a.mile}** · Medium **${a.medium}** · Long **${a.long}**`,
+    `Races where her surface and distance are **${minAptitude}** or better, at most **${maxInARow}** in a row.`,
+  ];
+  CAREER_YEARS.forEach((year, index) => {
+    const races = plan.races.filter((race) => race.year === index + 1);
+    if (!races.length) return;
+    lines.push("", `**${year} year** (${races.length})`);
+    for (const race of races) {
+      lines.push(`\`${SHORT_MONTHS[race.month - 1]} ${race.half}\` **${race.grade}** ${race.name} · ${race.distance}m ${race.surface} · ${shortFans(race.fans)}`);
+    }
+  });
+  if (!plan.races.length) lines.push("", "No races fit those aptitudes. Try `aptitude:B or better`.");
+  let description = lines.join("\n");
+  if (description.length > 4000) description = `${description.slice(0, 3990)}\n…`;
+  return {
+    title: `🏇 Most fans: ${umaName(uma)}`.slice(0, 256),
+    description,
+    color: EMBED_COLOR,
+    footer: {
+      text: `${plan.races.length} races · ${plan.fans.toLocaleString("en-US")} fans for winning them all (before fan bonus). ` +
+        "Her career goals still come first! Race data: GameTora",
+    },
+  };
+}
+
+async function answerRaces(interaction, env) {
+  const editUrl = `${API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+  try {
+    const options = optionValues(interaction);
+    const data = await loadRaces(env);
+    const uma = findUma(data, options.uma);
+    let payload;
+    if (!uma) {
+      payload = { content: "Hmm… I don't know that Uma. Start typing her name and pick her from the list! 💚" };
+    } else {
+      const settings = {
+        minAptitude: APTITUDE_RANK[options.aptitude] ? options.aptitude : "A",
+        maxInARow: Math.min(Math.max(Number(options.in_a_row) || DEFAULT_IN_A_ROW, 1), 6),
+      };
+      payload = { embeds: [racePlanEmbed(uma, planRaces(data, uma, settings), settings)] };
+    }
+    await sendToDiscord(editUrl, "PATCH", {}, payload);
+  } catch (err) {
+    console.error(err);
+    await sendToDiscord(editUrl, "PATCH", {}, { content: "Something went wrong, sorry." }).catch(() => {});
+  }
+}
+
+async function autocomplete(interaction, env) {
+  const focused = (interaction.data.options || []).find((option) => option.focused);
+  let choices = [];
+  if (interaction.data.name === "uma_races" && focused?.name === "uma") {
+    try {
+      choices = umaChoices(await loadRaces(env), focused.value);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  return jsonResponse({ type: 8, data: { choices } });
+}
+
 // ---- Belno's reaction GIFs (/uma_react, monthly reminder) -------------------------
 
 // Belno Light GIFs from Tenor, picked by the server owner on the /gifs page.

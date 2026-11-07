@@ -5,7 +5,7 @@ import { beforeEach, test } from "node:test";
 import worker, {
   buildDeck, buildEmbed, clearCardCache, clubSummary, deckEmbed, describeSchedule, formatFans, isSafe, localNow,
   makeCardsToken, monthlyDue, parseFans, parseLiveBoard, parseTime, pickImage, postTimes, prettyCharacter, readCardsToken,
-  MOODS, pickGif, REACTION_GIFS, runSchedule,
+  clearRaceCache, findUma, MOODS, pickGif, planRaces, REACTION_GIFS, runSchedule, umaChoices,
 } from "./worker.js";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
@@ -94,7 +94,8 @@ test("answers Discord's ping and registers /uma", async () => {
   const commands = JSON.parse(put.init.body);
   assert.deepEqual(commands.map((c) => c.name), [
     "uma", "uma_here", "uma_every", "uma_time", "uma_off", "uma_status", "uma_say", "uma_monthly", "uma_monthly_off",
-    "uma_cards", "uma_deck", "uma_import", "uma_test", "uma_fans", "uma_quota", "uma_summary", "uma_react",
+    "uma_cards", "uma_deck", "uma_races", "uma_import", "uma_test", "uma_fans", "uma_quota", "uma_summary",
+    "uma_react",
   ]);
   assert.equal(commands.find((c) => c.name === "uma_import").default_member_permissions, "32");
   assert.equal(commands.find((c) => c.name === "uma_test").default_member_permissions, "32");
@@ -1043,4 +1044,88 @@ test("/uma_monthly can add a new GIF each month, also through the message box", 
   assert.equal(body.content, "Quota!");
   const sad = REACTION_GIFS.filter((gif) => gif.mood === "sad").map((gif) => gif.id);
   assert.ok(sad.some((id) => body.embeds[0].image.url.includes(id)));
+});
+
+// ---- Race scheduler ------------------------------------------------------------------
+
+const race = (name, year, month, half, fans, extra = {}) => ({
+  id: name.length, name, grade: "G2", surface: "turf", distance: 2000, type: "medium", year, month, half, fans, needed: 0, ...extra,
+});
+const TURF_MEDIUM = { id: 1, name: "Turfy", title: "Green", aptitude: { turf: "A", dirt: "G", short: "F", mile: "B", medium: "A", long: "C" } };
+
+test("planRaces never races more than the limit in a row and picks the most fans", () => {
+  const data = {
+    debut_fans: 700,
+    races: [
+      race("Jul 1", 1, 7, 1, 1000), race("Jul 2", 1, 7, 2, 5000), race("Aug 1", 1, 8, 1, 1000),
+      race("Aug 2", 1, 8, 2, 5000), race("Sep 1", 1, 9, 1, 1000),
+    ],
+    umas: [TURF_MEDIUM],
+  };
+  // The debut (Jun 2) counts as a race, so with 2 in a row the best is Jul 2, then Aug 2 + Sep 1.
+  const plan = planRaces(data, TURF_MEDIUM, { maxInARow: 2 });
+  assert.deepEqual(plan.races.map((r) => r.name), ["Jul 2", "Aug 2", "Sep 1"]);
+  assert.equal(plan.fans, 11000);
+  assert.equal(planRaces(data, TURF_MEDIUM, { maxInARow: 6 }).fans, 13000); // all of them
+});
+
+test("planRaces keeps to her aptitudes, the fans needed to enter and the server", () => {
+  const data = {
+    debut_fans: 700,
+    races: [
+      race("Dirt cup", 1, 9, 1, 9000, { surface: "dirt" }),
+      race("Sprint", 1, 10, 1, 9000, { type: "short", distance: 1200 }),
+      race("Mile cup", 1, 11, 1, 3000, { type: "mile", distance: 1600 }),
+      race("Big one", 2, 2, 1, 30000, { needed: 5000 }),
+      race("Too early", 1, 12, 1, 20000, { needed: 25000 }),
+      race("JP only", 2, 3, 1, 9000, { jp_only: true }),
+      race("Starter", 1, 12, 2, 4300), // with the debut, exactly the 5,000 "Big one" needs
+    ],
+  };
+  assert.deepEqual(planRaces(data, TURF_MEDIUM).races.map((r) => r.name), ["Starter", "Big one"]);
+  // With B allowed, the mile race counts too, which also gets her to 5,000 fans sooner.
+  assert.deepEqual(planRaces(data, TURF_MEDIUM, { minAptitude: "B" }).races.map((r) => r.name), ["Mile cup", "Starter", "Big one"]);
+  assert.deepEqual(planRaces(data, { ...TURF_MEDIUM, jp_only: true }).races.map((r) => r.name), ["Starter", "Big one", "JP only"]);
+});
+
+const RACE_DATA = {
+  debut_fans: 700,
+  races: [race("Hopeful Stakes", 1, 12, 2, 7000, { grade: "G1" }), race("Japan Cup", 2, 11, 2, 30000, { grade: "G1", distance: 2400, needed: 6000 })],
+  umas: [
+    { id: 100101, name: "Special Week", title: "Special Dreamer", aptitude: TURF_MEDIUM.aptitude },
+    { id: 100102, name: "Special Week", title: "Hopp'n♪Happy Heart", aptitude: TURF_MEDIUM.aptitude, jp_only: true },
+    { id: 100201, name: "Silence Suzuka", title: "Innocent Silence", aptitude: TURF_MEDIUM.aptitude },
+  ],
+};
+
+test("Umas can be found by id or name, and are suggested while typing", () => {
+  assert.equal(findUma(RACE_DATA, "100201").name, "Silence Suzuka");
+  assert.equal(findUma(RACE_DATA, "suzuka").id, 100201);
+  assert.equal(findUma(RACE_DATA, "nobody"), null);
+  assert.deepEqual(umaChoices(RACE_DATA, "special"), [
+    { name: "Special Week [Special Dreamer]", value: "100101" },
+    { name: "Special Week [Hopp'n♪Happy Heart] (JP)", value: "100102" },
+  ]);
+});
+
+test("/uma_races plans the races, and the uma option autocompletes", async () => {
+  clearRaceCache();
+  routes["raw.githubusercontent.com"] = (url) => (url.endsWith("/race-data/races.json") ? Response.json(RACE_DATA) : new Response("", { status: 404 }));
+  const response = await run(await signedRequest(asUser("uma_races", [{ name: "uma", value: "100101" }])));
+  assert.deepEqual(await response.json(), { type: 5 });
+  const { embeds } = JSON.parse(editCalls()[0].init.body);
+  assert.equal(embeds[0].title, "🏇 Most fans: Special Week [Special Dreamer]");
+  assert.match(embeds[0].description, /Turf \*\*A\*\* · Dirt \*\*G\*\*/);
+  assert.match(embeds[0].description, /\*\*Junior year\*\* \(1\)\n`Dec 2` \*\*G1\*\* Hopeful Stakes · 2000m turf · 7k/);
+  assert.match(embeds[0].description, /`Nov 2` \*\*G1\*\* Japan Cup · 2400m turf · 30k/);
+  assert.match(embeds[0].footer.text, /^2 races · 37,000 fans/);
+
+  calls = [];
+  await run(await signedRequest(asUser("uma_races", [{ name: "uma", value: "Nobody" }])));
+  assert.match(JSON.parse(editCalls()[0].init.body).content, /don't know that Uma/);
+
+  const typing = { ...asUser("uma_races", [{ name: "uma", value: "suz", focused: true }]), type: 4 };
+  assert.deepEqual(await (await run(await signedRequest(typing))).json(), {
+    type: 8, data: { choices: [{ name: "Silence Suzuka [Innocent Silence]", value: "100201" }] },
+  });
 });
