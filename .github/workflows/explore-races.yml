@@ -27,21 +27,17 @@ jobs:
           def q(**params):
               s, body = get(api + urllib.parse.urlencode({"format": "json", **params}))
               return json.loads(body) if s == 200 else {"error": body[:300]}
-          titles, cont = [], {}
-          while True:
-              data = q(action="query", list="allpages", apnamespace=828, aplimit=500, **cont)
-              titles += [p["title"] for p in data.get("query", {}).get("allpages", [])]
-              if "continue" not in data: break
-              cont = {"apcontinue": data["continue"]["apcontinue"]}
-          print("MODULES", len(titles))
-          print([t for t in titles if t.startswith("Module:Game/")])
           def source(title, n):
               data = q(action="query", prop="revisions", rvprop="content", rvslots="main", titles=title)
               page = next(iter(data.get("query", {}).get("pages", {}).values()), {})
               text = page.get("revisions", [{}])[0].get("slots", {}).get("main", {}).get("*", "MISSING")
               print("=====", title, len(text)); print(text[:n])
-          source("Module:Game/Characters", 4000)
-          source("G1 Races", 2500)
-          for t in titles:
-              if t.startswith("Module:Game/") and any(k in t.lower() for k in ("race", "program")):
-                  source(t, 3000)
+          source("Module:Game/Playables/Data/100101", 3000)
+          source("Module:Game/Playables", 2500)
+          source("Game:G1 Races Calendar", 3000)
+          data = q(action="cargotables")
+          print("CARGO", str(data)[:1500])
+          for url in ("https://gametora.com/umamusume/race-scheduler", "https://gametora.com/umamusume/races"):
+              s, body = get(url)
+              import re
+              print("GAMETORA", url, s, len(body), sorted(set(re.findall(r'/data/umamusume/[\w./-]+', body)))[:40], re.findall(r'_next/static/[\w-]+/_buildManifest', body)[:2])
