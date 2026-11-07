@@ -24,13 +24,24 @@ jobs:
               except Exception as e:
                   return getattr(e, "code", None), repr(e)
           api = "https://umamusu.wiki/w/api.php?"
-          s, body = get(api + urllib.parse.urlencode({"action": "query", "list": "allpages", "apnamespace": 828, "aplimit": 500, "format": "json"}))
-          titles = [p["title"] for p in json.loads(body)["query"]["allpages"]] if s == 200 else []
-          print("MODULES", s, len(titles))
-          print([t for t in titles if any(k in t.lower() for k in ("race", "chara", "apt", "sched", "program", "fan", "career", "objective"))])
-          for q in ("Race list", "List of races", "Races"):
-              s, body = get(api + urllib.parse.urlencode({"action": "query", "list": "search", "srsearch": q, "srlimit": 10, "format": "json"}))
-              print("SEARCH", q, s, [r["title"] for r in json.loads(body)["query"]["search"]] if s == 200 else body[:200])
-          for url in ("https://umapyoi.net/api/v1/character/list", "https://umapyoi.net/api/v1/race", "https://umapyoi.net/api/v1/race/list"):
-              s, body = get(url)
-              print("UMAPYOI", url, s, body[:600])
+          def q(**params):
+              s, body = get(api + urllib.parse.urlencode({"format": "json", **params}))
+              return json.loads(body) if s == 200 else {"error": body[:300]}
+          titles, cont = [], {}
+          while True:
+              data = q(action="query", list="allpages", apnamespace=828, aplimit=500, **cont)
+              titles += [p["title"] for p in data.get("query", {}).get("allpages", [])]
+              if "continue" not in data: break
+              cont = {"apcontinue": data["continue"]["apcontinue"]}
+          print("MODULES", len(titles))
+          print([t for t in titles if t.startswith("Module:Game/")])
+          def source(title, n):
+              data = q(action="query", prop="revisions", rvprop="content", rvslots="main", titles=title)
+              page = next(iter(data.get("query", {}).get("pages", {}).values()), {})
+              text = page.get("revisions", [{}])[0].get("slots", {}).get("main", {}).get("*", "MISSING")
+              print("=====", title, len(text)); print(text[:n])
+          source("Module:Game/Characters", 4000)
+          source("G1 Races", 2500)
+          for t in titles:
+              if t.startswith("Module:Game/") and any(k in t.lower() for k in ("race", "program")):
+                  source(t, 3000)
