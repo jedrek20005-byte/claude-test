@@ -1,0 +1,21 @@
+# The Modern Warships leaks bot (warships-worker/worker.js), a second Worker
+# next to Belno. .github/workflows/deploy-warships.yml deploys it and fills in
+# the KV id below (it creates the "mwleaks-state" namespace the first time).
+name = "mwleaks"
+main = "warships-worker/worker.js"
+compatibility_date = "2026-07-01"
+account_id = "1b83162d6cf687554e942ff69d3311dc"
+workers_dev = true
+keep_vars = true
+
+# Checks the sources every 10 minutes.
+[triggers]
+crons = ["*/10 * * * *"]
+
+# Settings and which posts were already seen.
+[[kv_namespaces]]
+binding = "LEAKS_STATE"
+id = "__KV_ID__"
+
+[observability]
+enabled = true

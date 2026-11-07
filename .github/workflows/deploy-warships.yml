@@ -1,0 +1,77 @@
+name: Deploy leaks bot
+
+# Deploys the Modern Warships leaks bot (warships-worker/) as its own Worker,
+# and sets it up: creates its storage, copies the LEAKS_KEY and LEAKS_TOKEN
+# secrets (the new Discord app's Public Key and Bot Token) to the Worker,
+# points the app's Interactions Endpoint URL at it and registers the commands.
+on:
+  push:
+    paths:
+      - warships-worker/worker.js
+      - wrangler.warships.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-warships
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Deploy and set up
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 1b83162d6cf687554e942ff69d3311dc
+          LEAKS_KEY: ${{ secrets.LEAKS_KEY }}
+          LEAKS_TOKEN: ${{ secrets.LEAKS_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::warning::Add the CLOUDFLARE_API_TOKEN secret to deploy automatically."
+            [ "$GITHUB_EVENT_NAME" = "push" ] && exit 0 || exit 1
+          fi
+          set -o pipefail
+          wr="npx --yes wrangler@4"
+
+          # Storage: find or create the namespace, and put its id in the config.
+          id=$($wr kv namespace list | python3 -c 'import json,sys; print(next((n["id"] for n in json.load(sys.stdin) if n["title"] == "mwleaks-state"), ""))')
+          if [ -z "$id" ]; then
+            $wr kv namespace create mwleaks-state | tee kv.log
+            id=$(grep -oE '[0-9a-f]{32}' kv.log | head -1)
+          fi
+          [ -n "$id" ] || { echo "::error::Couldn't find or create the KV namespace."; exit 1; }
+          sed -i "s/__KV_ID__/$id/" wrangler.warships.toml
+
+          $wr deploy -c wrangler.warships.toml | tee deploy.log
+          url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+
+          if [ -z "$LEAKS_KEY" ] || [ -z "$LEAKS_TOKEN" ]; then
+            echo "::warning::Deployed, but add the LEAKS_KEY and LEAKS_TOKEN secrets (the new app's Public Key and Bot Token) and run this again to finish the setup."
+            exit 0
+          fi
+          printf '%s' "$LEAKS_KEY" | $wr secret put DISCORD_PUBLIC_KEY -c wrangler.warships.toml
+          printf '%s' "$LEAKS_TOKEN" | $wr secret put DISCORD_TOKEN -c wrangler.warships.toml
+          sleep 20  # let the new version with the secrets reach Cloudflare's servers
+
+          # Point the Discord app at the Worker (Discord checks it right away).
+          status=$(curl -sS -o patch.json -w '%{http_code}' -X PATCH "https://discord.com/api/v10/applications/@me" \
+            -H "Authorization: Bot $LEAKS_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"interactions_endpoint_url\": \"$url/\"}")
+          if [ "$status" = "200" ]; then
+            echo "Interactions Endpoint URL set to $url/"
+          else
+            echo "::warning::Discord didn't accept the endpoint (HTTP $status): $(python3 -c 'import json; print(json.load(open("patch.json")).get("message", ""))' 2>/dev/null). Paste $url/ into the app's Interactions Endpoint URL by hand."
+          fi
+
+          if curl -fsS "$url/register" | tee register.txt | grep -q "registered"; then
+            echo "Slash commands registered."
+            { echo "### Leaks bot is ready"; echo; cat register.txt; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Couldn't register the slash commands; open $url/register"
+          fi

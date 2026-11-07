@@ -231,3 +231,25 @@ discord-worker/  slash commands + daily picture as a Cloudflare Worker (no alway
 ```
 
 Please respect each site's terms of service and rate limits. The bot makes only a few requests per day plus one per `/uma`.
+
+## Modern Warships leaks bot
+
+A second, separate Discord app in [`warships-worker/`](warships-worker/worker.js). Every 10 minutes it checks subreddits (through their RSS feed, since Reddit blocks its API from servers), YouTube channels and public Telegram channels, and posts new posts that match a keyword in your leaks channel. X (Twitter) isn't supported: it doesn't allow free automatic reading.
+
+| Command | What it does |
+| --- | --- |
+| `/leaks_here` | posts leaks in this channel (or `channel:`), starting with r/ModernWarships posts that mention "leak" |
+| `/leaks_add source:YouTube name:@SomeChannel filter:leak` | watches a subreddit, YouTube channel (@handle or link) or Telegram channel (`t.me/name`); `filter:` is comma-separated words, empty means everything |
+| `/leaks_remove name:…` | stops watching a source (autocompletes) |
+| `/leaks_list` | shows the sources, their filters and any problem |
+| `/leaks_test` | posts the newest matching post from each source now |
+| `/leaks_off` | pauses posting (sources are kept) |
+
+All commands need Manage Server. Posts from before a source was added aren't reposted, and at most 5 new posts per source go out per check.
+
+**Setup (phone friendly):**
+
+1. <https://discord.com/developers/applications> → **New Application** (name and picture are up to you). Copy the **Public Key** from General Information, then **Bot → Reset Token** and copy the token.
+2. In this repo: **Settings → Secrets and variables → Actions → New repository secret**: `LEAKS_KEY` = the Public Key, `LEAKS_TOKEN` = the bot token.
+3. **Actions → Deploy leaks bot → Run workflow.** It creates the storage, deploys `mwleaks` (on the same Cloudflare account as Belno, using `CLOUDFLARE_API_TOKEN`), sets the app's Interactions Endpoint URL, registers the commands and shows the invite link in the run's summary.
+4. Invite the bot with that link and use `/leaks_here` in your leaks channel.
