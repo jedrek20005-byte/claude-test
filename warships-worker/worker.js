@@ -212,7 +212,14 @@ async function youtubeChannelId(handle) {
 
 export async function fetchPosts(source) {
   if (source.type === "reddit") {
-    return parseRedditFeed(await fetchText(`https://www.reddit.com/r/${source.name}/new/.rss`));
+    // Reddit often rate-limits Cloudflare's shared servers on one address but
+    // not the other, so try both.
+    try {
+      return parseRedditFeed(await fetchText(`https://www.reddit.com/r/${source.name}/new/.rss`));
+    } catch (err) {
+      if (!/HTTP (429|403)/.test(err.message)) throw err;
+      return parseRedditFeed(await fetchText(`https://old.reddit.com/r/${source.name}/new/.rss`));
+    }
   }
   if (source.type === "youtube") {
     const id = source.id ?? (await youtubeChannelId(source.name));
@@ -315,9 +322,7 @@ async function checkGuild(env, guildId, guild, fetchOnce, now) {
     for (const post of fresh) {
       const res = await sendMessage(env, guild.channelId, postMessage(source, post));
       if (!res.ok) {
-        error = res.status === 403 || res.status === 404
-          ? `I can't post in the leaks channel (HTTP ${res.status}); check I can see it and send messages and embeds there.`
-          : `Discord refused a post (HTTP ${res.status}).`;
+        error = await postProblem(res, guild.channelId);
         break;
       }
       posted.add(post.id);
@@ -339,6 +344,18 @@ async function checkGuild(env, guildId, guild, fetchOnce, now) {
 
 function botHeaders(env) {
   return { Authorization: `Bot ${env.DISCORD_TOKEN}`, "User-Agent": BOT_USER_AGENT };
+}
+
+// Why Discord refused a post, in words someone can act on.
+export async function postProblem(res, channelId) {
+  const code = await res.clone().json().then((body) => body.code, () => null);
+  if (code === 50001 || res.status === 404) {
+    return `I can't see <#${channelId}>. Open the channel's settings → Permissions → add me, and allow View Channel, Send Messages and Embed Links.`;
+  }
+  if (code === 50013 || res.status === 403) {
+    return `I'm missing a permission in <#${channelId}>: allow me Send Messages and Embed Links there (channel settings → Permissions).`;
+  }
+  return `Discord refused the post (HTTP ${res.status}).`;
 }
 
 function sendMessage(env, channelId, message) {
@@ -536,6 +553,7 @@ const HANDLERS = {
       if (!guild?.sources?.length) return "Nothing set up yet. Use `/leaks_here` first!";
       const channelId = guild.channelId || interaction.channel_id;
       const lines = [];
+      let problem = null;
       for (const source of guild.sources) {
         try {
           const post = (await fetchPosts(source)).find((p) => matches(p, parseFilter(source.filter)));
@@ -543,13 +561,18 @@ const HANDLERS = {
             lines.push(`${sourceLabel(source)}: no matching posts right now`);
             continue;
           }
+          if (problem) {
+            lines.push(`${sourceLabel(source)}: found one, but I can't post it (see below)`);
+            continue;
+          }
           const res = await sendMessage(env, channelId, postMessage(source, post));
-          lines.push(`${sourceLabel(source)}: ${res.ok ? "posted ✅" : `Discord said HTTP ${res.status}`}`);
+          if (!res.ok) problem = await postProblem(res, channelId);
+          lines.push(`${sourceLabel(source)}: ${res.ok ? "posted ✅" : "found one, but I can't post it (see below)"}`);
         } catch (err) {
           lines.push(`${sourceLabel(source)}: ⚠️ ${err.message}`);
         }
       }
-      return `Test posts in <#${channelId}>:\n${lines.join("\n")}`;
+      return `Test posts in <#${channelId}>:\n${lines.join("\n")}${problem ? `\n\n⚠️ ${problem}` : ""}`;
     });
   },
 

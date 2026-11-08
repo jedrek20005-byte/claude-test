@@ -199,10 +199,10 @@ test("the first check only remembers what's there; later ones post new matching 
 test("a failed post is retried, errors are remembered, and off servers are skipped", async () => {
   kv = fakeKV({ guilds: guildWith([REDDIT]), "state:777": { "reddit:modernwarships": { seen: [], primed: true } } });
   env.LEAKS_STATE = kv;
-  routes["discord.com"] = () => Response.json({ message: "Missing Access" }, { status: 403 });
+  routes["discord.com"] = () => Response.json({ message: "Missing Access", code: 50001 }, { status: 403 });
   await runChecks(env);
   const state = kv.json("state:777")["reddit:modernwarships"];
-  assert.match(state.error, /can't post in the leaks channel \(HTTP 403\)/);
+  assert.match(state.error, /I can't see <#555>\. Open the channel's settings → Permissions → add me/);
   assert.deepEqual(state.seen, []); // the leak wasn't posted, so it's tried again
 
   routes["discord.com"] = () => Response.json({ id: "1" });
@@ -211,8 +211,9 @@ test("a failed post is retried, errors are remembered, and off servers are skipp
   assert.equal(kv.json("state:777")["reddit:modernwarships"].error, null);
 
   routes["www.reddit.com"] = () => new Response("blocked", { status: 403 });
+  routes["old.reddit.com"] = () => new Response("blocked", { status: 403 });
   await runChecks(env);
-  assert.equal(kv.json("state:777")["reddit:modernwarships"].error, "HTTP 403 from www.reddit.com");
+  assert.equal(kv.json("state:777")["reddit:modernwarships"].error, "HTTP 403 from old.reddit.com");
 
   calls = [];
   kv = fakeKV({ guilds: { 777: { enabled: false, channelId: "555", sources: [REDDIT] } } });
@@ -321,4 +322,18 @@ test("/leaks_all watches every known leak source once, looking up YouTube IDs it
   await run(await signed(command("leaks_all", [{ name: "channel", value: "600" }])));
   assert.equal(kv.json("guilds")["777"].sources.length, LEAK_SOURCES.length); // GylaxMW now found, nothing doubled
   assert.equal(kv.json("guilds")["777"].channelId, "600");
+});
+
+test("Reddit falls back to old.reddit.com when rate-limited, and /leaks_test explains a missing permission", async () => {
+  routes["www.reddit.com"] = () => new Response("Too Many Requests", { status: 429 });
+  routes["old.reddit.com"] = () => new Response(redditFeed(redditEntry("zzz", "Leak from old reddit")));
+  kv = fakeKV({ guilds: guildWith([REDDIT, { type: "telegram", name: "mwleaks" }]) });
+  env.LEAKS_STATE = kv;
+  routes["discord.com"] = () => Response.json({ message: "Missing Permissions", code: 50013 }, { status: 403 });
+  await run(await signed(command("leaks_test")));
+  const text = edits()[0].content;
+  assert.match(text, /r\/ModernWarships: found one, but I can't post it/);
+  assert.match(text, /t\.me\/mwleaks: found one, but I can't post it/);
+  assert.match(text, /⚠️ I'm missing a permission in <#555>: allow me Send Messages and Embed Links/);
+  assert.equal(posts().length, 1); // stops trying after the first refusal
 });
