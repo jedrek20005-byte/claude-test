@@ -1,8 +1,9 @@
 // Modern Warships leaks: a Discord app (Cloudflare Worker) that watches
-// subreddits, YouTube channels and Telegram channels and posts new posts that
-// match a keyword (like "leak") in a channel.
+// subreddits, YouTube channels and Telegram channels, has an AI model read each
+// new post that matches a keyword (like "leak"), and posts just the specific
+// leak details it finds (ships, weapons, events, dates) in a channel.
 //
-// Secrets: DISCORD_PUBLIC_KEY, DISCORD_TOKEN. KV binding: LEAKS_STATE.
+// Secrets: DISCORD_PUBLIC_KEY, DISCORD_TOKEN. Bindings: LEAKS_STATE (KV), AI.
 // Deployed by .github/workflows/deploy-warships.yml (wrangler.warships.toml).
 
 const API = "https://discord.com/api/v10";
@@ -237,22 +238,77 @@ const sourceLabel = (source) =>
 
 // ---- Messages -------------------------------------------------------------------------
 
-export function postMessage(source, post) {
-  if (source.type === "youtube") {
-    // Discord shows the video player for a bare YouTube link.
-    return {
-      content: `${SOURCE_TYPES.youtube.icon} **${post.author || source.name}** posted a new video: **${clip(post.title, 200)}**\n${post.url}`,
-      allowed_mentions: { parse: [] },
-    };
+// Each post is read by an AI model (Cloudflare Workers AI, the AI binding),
+// which pulls out only the specific leak facts; posts without any aren't sent.
+const AI_MODELS = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"];
+const MAX_AI_INPUT = 12000;
+const LEAK_PROMPT = `You read posts, video descriptions and video transcripts about the mobile game Modern Warships and pull out the concrete leaked or upcoming content.
+Only report facts stated in the text: names of upcoming ships, submarines, aircraft, weapons and modules (with their class, country, rank or tier when given), new events, battle passes, game modes, maps, update or release dates, prices and balance changes.
+Never guess, never add facts that are not in the text, and leave out greetings, opinions, sponsors and requests to subscribe.
+Answer only with JSON like {"headline": "short summary, max 80 characters", "points": ["one specific fact", "another"]} with at most 8 points.
+If the text contains no specific leak or upcoming-content information, answer {"points": []}.`;
+
+// A video's subtitles, when YouTube offers them to servers (often it doesn't).
+async function youtubeTranscript(videoId) {
+  try {
+    const html = await fetchText(`https://www.youtube.com/watch?v=${videoId}`);
+    const tracks = JSON.parse(html.match(/"captionTracks":(\[.*?\])/)?.[1] ?? "[]");
+    const track = tracks.find((t) => /^en/.test(t.languageCode)) ?? tracks[0];
+    if (!track?.baseUrl) return "";
+    const xml = await fetchText(track.baseUrl.replace(/\\u0026/g, "&"));
+    return [...xml.matchAll(/<text\b[^>]*>([\s\S]*?)<\/text>/g)].map((m) => decodeEntities(decodeEntities(m[1]))).join(" ");
+  } catch {
+    return "";
   }
+}
+
+export function parseLeakAnswer(answer) {
+  const text = typeof answer === "string" ? answer : answer?.response ?? "";
+  const json = typeof answer?.response === "object" ? answer.response : (() => {
+    try {
+      return JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] ?? "null");
+    } catch {
+      return null;
+    }
+  })();
+  const points = (Array.isArray(json?.points) ? json.points : [])
+    .map((point) => String(point).replace(/^[\s•*-]+/, "").trim()).filter(Boolean).slice(0, 8);
+  if (!points.length) return null;
+  return { headline: String(json.headline || "").trim().slice(0, 100), points };
+}
+
+// The leak facts in a post, or null when it has none (or no AI is connected).
+export async function leakSummary(env, source, post) {
+  if (!env.AI) return null;
+  let body = `${post.title}\n\n${post.text || ""}`;
+  if (source.type === "youtube") {
+    const transcript = await youtubeTranscript(post.id);
+    if (transcript) body += `\n\nTranscript:\n${transcript}`;
+  }
+  const messages = [
+    { role: "system", content: LEAK_PROMPT },
+    { role: "user", content: `Source: ${sourceLabel(source)}\n\n${body.slice(0, MAX_AI_INPUT)}` },
+  ];
+  for (const model of AI_MODELS) {
+    try {
+      return parseLeakAnswer(await env.AI.run(model, { messages, max_tokens: 600, temperature: 0.1 }));
+    } catch (err) {
+      console.error(`${model} failed: ${err.message}`);
+    }
+  }
+  throw new Error("The AI couldn't read the post right now");
+}
+
+export function leakMessage(source, post, summary) {
   const embed = {
     color: EMBED_COLOR,
     author: { name: clip(`${SOURCE_TYPES[source.type].icon} ${sourceLabel(source)}${post.author ? ` · ${post.author}` : ""}`, 256) },
-    title: clip(post.title || "New post", 256),
+    title: clip(`🔎 ${summary.headline || post.title || "New leak"}`, 256),
     url: post.url,
-    description: clip(post.text || "", source.type === "telegram" ? 2000 : 700) || undefined,
+    description: clip(summary.points.map((point) => `• ${point}`).join("\n"), 3500),
+    footer: { text: "Summarised by AI from the post; it can make mistakes." },
   };
-  if (post.image) embed.image = { url: post.image };
+  if (post.image) embed.thumbnail = { url: post.image };
   if (post.time && !Number.isNaN(Date.parse(post.time))) embed.timestamp = new Date(post.time).toISOString();
   return { embeds: [embed], allowed_mentions: { parse: [] } };
 }
@@ -281,6 +337,11 @@ const stateKey = (guildId) => `state:${guildId}`;
 export async function runChecks(env, now = new Date()) {
   const guilds = await loadGuilds(env);
   const cache = new Map(); // each source is fetched once per run, however many servers watch it
+  const summaries = new Map(); // and each post is read once
+  const summarise = (source, post) => {
+    if (!summaries.has(post.id)) summaries.set(post.id, leakSummary(env, source, post).then((s) => ({ s }), (err) => ({ err })));
+    return summaries.get(post.id);
+  };
   const fetchOnce = (source) => {
     const key = sourceKey(source);
     if (!cache.has(key)) cache.set(key, fetchPosts(source).then((posts) => ({ posts }), (err) => ({ error: err.message })));
@@ -289,14 +350,14 @@ export async function runChecks(env, now = new Date()) {
   for (const [guildId, guild] of Object.entries(guilds)) {
     if (!guild.enabled || !guild.channelId || !guild.sources?.length) continue;
     try {
-      await checkGuild(env, guildId, guild, fetchOnce, now);
+      await checkGuild(env, guildId, guild, fetchOnce, summarise, now);
     } catch (err) {
       console.error(`Leak check for server ${guildId} failed: ${err.message}`);
     }
   }
 }
 
-async function checkGuild(env, guildId, guild, fetchOnce, now) {
+async function checkGuild(env, guildId, guild, fetchOnce, summarise, now) {
   const state = (await env.LEAKS_STATE.get(stateKey(guildId), "json")) ?? {};
   let changed = false;
   for (const source of guild.sources) {
@@ -320,12 +381,19 @@ async function checkGuild(env, guildId, guild, fetchOnce, now) {
     const posted = new Set();
     let error = null;
     for (const post of fresh) {
-      const res = await sendMessage(env, guild.channelId, postMessage(source, post));
-      if (!res.ok) {
-        error = await postProblem(res, guild.channelId);
+      const { s: summary, err } = await summarise(source, post);
+      if (err) {
+        error = err.message; // read again next time
         break;
       }
-      posted.add(post.id);
+      if (summary) {
+        const res = await sendMessage(env, guild.channelId, leakMessage(source, post, summary));
+        if (!res.ok) {
+          error = await postProblem(res, guild.channelId);
+          break;
+        }
+      }
+      posted.add(post.id); // also posts with nothing specific in them: they're done
     }
     // Everything fetched counts as seen, except matching posts that couldn't be
     // posted: those are tried again next time.
@@ -565,7 +633,12 @@ const HANDLERS = {
             lines.push(`${sourceLabel(source)}: found one, but I can't post it (see below)`);
             continue;
           }
-          const res = await sendMessage(env, channelId, postMessage(source, post));
+          const summary = await leakSummary(env, source, post);
+          if (!summary) {
+            lines.push(`${sourceLabel(source)}: newest post (“${clip(post.title || "untitled", 60)}”) has no specific leak details`);
+            continue;
+          }
+          const res = await sendMessage(env, channelId, leakMessage(source, post, summary));
           if (!res.ok) problem = await postProblem(res, channelId);
           lines.push(`${sourceLabel(source)}: ${res.ok ? "posted ✅" : "found one, but I can't post it (see below)"}`);
         } catch (err) {
@@ -602,6 +675,7 @@ function statusPage(env) {
     check(Boolean(env.DISCORD_PUBLIC_KEY), "DISCORD_PUBLIC_KEY"),
     check(Boolean(env.DISCORD_TOKEN), "DISCORD_TOKEN"),
     check(Boolean(env.LEAKS_STATE), "LEAKS_STATE"),
+    check(Boolean(env.AI), "AI (Workers AI, reads the posts)"),
     "Open /register to register the slash commands and get the invite link.",
   ].join("\n");
   return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });

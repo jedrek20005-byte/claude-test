@@ -4,7 +4,7 @@ import { beforeEach, test } from "node:test";
 
 import worker, {
   decodeEntities, htmlToText, matches, normalizeSource, parseFilter, parseRedditFeed, parseTelegramPage,
-  LEAK_SOURCES, parseYouTubeFeed, postMessage, runChecks, sourceKey,
+  leakMessage, leakSummary, LEAK_SOURCES, parseLeakAnswer, parseYouTubeFeed, runChecks, sourceKey,
 } from "./worker.js";
 
 const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
@@ -49,14 +49,25 @@ ${photo ? `<a class="tgme_widget_message_photo_wrap 1 1" href="https://t.me/mwle
 const telegramPage = (...messages) => `<html><body>${messages.join("")}</body></html>`;
 
 let calls;
+let aiCalls;
 let routes;
+// Pretends to be Workers AI: one fact per post, nothing for patch notes.
+const fakeAI = {
+  async run(model, { messages }) {
+    aiCalls.push({ model, text: messages[1].content });
+    const title = messages[1].content.split("\n\n")[1].split("\n")[0];
+    const points = /patch/i.test(title) ? [] : [`Fact from ${title}`];
+    return { response: JSON.stringify({ headline: title, points }) };
+  },
+};
 let kv;
 let env;
 
 beforeEach(() => {
   calls = [];
   kv = fakeKV();
-  env = { DISCORD_PUBLIC_KEY: PUBLIC_KEY, DISCORD_TOKEN: "bot-token", LEAKS_STATE: kv };
+  aiCalls = [];
+  env = { DISCORD_PUBLIC_KEY: PUBLIC_KEY, DISCORD_TOKEN: "bot-token", LEAKS_STATE: kv, AI: fakeAI };
   routes = {
     "www.reddit.com": () => new Response(redditFeed(redditEntry("aaa", "Old leak"))),
     "www.youtube.com": (url) => url.includes("/feeds/") ? new Response(YOUTUBE_FEED) : new Response('{"externalId":"UC1hDoirWXy7vdkuNUo4H_mQ"}'),
@@ -159,15 +170,45 @@ test("filters and source names", () => {
   assert.equal(sourceKey({ type: "reddit", name: "ModernWarships" }), "reddit:modernwarships");
 });
 
-test("messages: YouTube as a bare link (Discord shows the player), others as embeds", () => {
-  const video = postMessage({ type: "youtube", name: "@MWNews" }, parseYouTubeFeed(YOUTUBE_FEED)[0]);
-  assert.equal(video.content, "▶️ **MW News** posted a new video: **NEW SHIP LEAKED! Season 30**\nhttps://www.youtube.com/watch?v=abc123def45");
+test("the AI's answer becomes a list of facts, and nothing when it found none", () => {
+  assert.deepEqual(parseLeakAnswer({ response: 'Sure! {"headline": "New carrier", "points": ["- CVN-80 Enterprise, rank 3", " Arrives in the December update"]}' }),
+    { headline: "New carrier", points: ["CVN-80 Enterprise, rank 3", "Arrives in the December update"] });
+  assert.deepEqual(parseLeakAnswer({ response: { headline: "x", points: ["A"] } }), { headline: "x", points: ["A"] });
+  assert.equal(parseLeakAnswer({ response: '{"points": []}' }), null);
+  assert.equal(parseLeakAnswer({ response: "I can't help" }), null);
+});
+
+test("leak messages show the facts with a link to the source, not the video itself", () => {
   const [post] = parseRedditFeed(redditFeed(redditEntry("xyz", "Leak!")));
-  const { embeds, allowed_mentions } = postMessage({ type: "reddit", name: "ModernWarships" }, post);
+  const { embeds, allowed_mentions, content } = leakMessage({ type: "reddit", name: "ModernWarships" }, post,
+    { headline: "New frigate", points: ["Type 054B", "Rank 2"] });
+  assert.equal(content, undefined);
+  assert.equal(embeds[0].title, "🔎 New frigate");
+  assert.equal(embeds[0].description, "• Type 054B\n• Rank 2");
   assert.equal(embeds[0].author.name, "🟠 r/ModernWarships · /u/sailor");
   assert.equal(embeds[0].url, post.url);
+  assert.equal(embeds[0].thumbnail.url, "https://b.thumbs.redditmedia.com/xyz.jpg");
   assert.equal(embeds[0].timestamp, "2026-11-07T14:59:00.000Z");
   assert.deepEqual(allowed_mentions, { parse: [] });
+});
+
+test("for YouTube the AI also reads the video's subtitles when there are any", async () => {
+  routes["www.youtube.com"] = (url) => {
+    if (url.includes("/watch?v=")) {
+      return new Response('..."captionTracks":[{"baseUrl":"https://www.youtube.com/api/timedtext?v=abc\\u0026lang=en","languageCode":"en"}],...');
+    }
+    if (url.includes("/api/timedtext")) return new Response('<transcript><text start="1">The new &amp;amp; shiny</text><text start="2">destroyer is coming</text></transcript>');
+    return new Response(YOUTUBE_FEED);
+  };
+  const video = parseYouTubeFeed(YOUTUBE_FEED)[0];
+  const summary = await leakSummary(env, { type: "youtube", name: "@MWNews" }, video);
+  assert.deepEqual(summary, { headline: "NEW SHIP LEAKED! Season 30", points: ["Fact from NEW SHIP LEAKED! Season 30"] });
+  assert.match(aiCalls[0].text, /All the leaks & more\n\nTranscript:\nThe new & shiny destroyer is coming/);
+  assert.equal(aiCalls[0].model, "@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+});
+
+test("without the AI binding nothing is summarised", async () => {
+  assert.equal(await leakSummary({ ...env, AI: undefined }, { type: "reddit", name: "x" }, { title: "Leak", text: "" }), null);
 });
 
 // ---- The timer ----------------------------------------------------------------------
@@ -186,7 +227,8 @@ test("the first check only remembers what's there; later ones post new matching 
     redditEntry("ccc", "Second LEAK"), redditEntry("bbb", "Patch notes"), redditEntry("bb2", "First leak"), redditEntry("aaa", "Old leak"),
   ));
   await runChecks(env);
-  assert.deepEqual(posts().map((p) => p.embeds[0].title), ["First leak", "Second LEAK"]);
+  assert.deepEqual(posts().map((p) => p.embeds[0].title), ["🔎 First leak", "🔎 Second LEAK"]);
+  assert.deepEqual(posts().map((p) => p.embeds[0].description), ["• Fact from First leak", "• Fact from Second LEAK"]);
   assert.deepEqual(kv.json("state:777")["reddit:modernwarships"].seen, ["t3_ccc", "t3_bbb", "t3_bb2", "t3_aaa"]);
 
   calls = [];
@@ -296,7 +338,7 @@ test("/leaks_test posts the newest matching post from each source", async () => 
   env.LEAKS_STATE = kv;
   await run(await signed(command("leaks_test")));
   assert.equal(posts().length, 1);
-  assert.equal(posts()[0].embeds[0].title, "Old leak");
+  assert.equal(posts()[0].embeds[0].title, "🔎 Old leak");
   assert.match(edits()[0].content, /r\/ModernWarships: posted ✅\nt\.me\/mwleaks: no matching posts right now/);
 });
 
@@ -336,4 +378,25 @@ test("Reddit falls back to old.reddit.com when rate-limited, and /leaks_test exp
   assert.match(text, /t\.me\/mwleaks: found one, but I can't post it/);
   assert.match(text, /⚠️ I'm missing a permission in <#555>: allow me Send Messages and Embed Links/);
   assert.equal(posts().length, 1); // stops trying after the first refusal
+});
+
+test("posts the AI finds nothing specific in are skipped; if the AI fails they're read again later", async () => {
+  kv = fakeKV({ guilds: guildWith([{ type: "reddit", name: "ModernWarships" }]), "state:777": { "reddit:modernwarships": { seen: [], primed: true } } });
+  env.LEAKS_STATE = kv;
+  routes["www.reddit.com"] = () => new Response(redditFeed(redditEntry("p1", "Patch notes 1.2")));
+  await runChecks(env);
+  assert.equal(posts().length, 0);
+  assert.deepEqual(kv.json("state:777")["reddit:modernwarships"].seen, ["t3_p1"]); // done with it
+
+  routes["www.reddit.com"] = () => new Response(redditFeed(redditEntry("l1", "Leak: new sub")));
+  env.AI = { run: async () => { throw new Error("overloaded"); } };
+  await runChecks(env);
+  assert.equal(posts().length, 0);
+  const state = kv.json("state:777")["reddit:modernwarships"];
+  assert.equal(state.error, "The AI couldn't read the post right now");
+  assert.ok(!state.seen.includes("t3_l1"));
+
+  env.AI = fakeAI;
+  await runChecks(env);
+  assert.deepEqual(posts().map((p) => p.embeds[0].title), ["🔎 Leak: new sub"]);
 });

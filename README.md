@@ -234,7 +234,7 @@ Please respect each site's terms of service and rate limits. The bot makes only 
 
 ## Modern Warships leaks bot
 
-A second, separate Discord app in [`warships-worker/`](warships-worker/worker.js). Every 10 minutes it checks subreddits (through their RSS feed, since Reddit blocks its API from servers), YouTube channels and public Telegram channels, and posts new posts that match a keyword in your leaks channel. X (Twitter) isn't supported: it doesn't allow free automatic reading.
+A second, separate Discord app in [`warships-worker/`](warships-worker/worker.js). Every 10 minutes it checks subreddits (through their RSS feed, since Reddit blocks its API from servers), YouTube channels and public Telegram channels. Each new post that matches a keyword is read by an AI model (Cloudflare Workers AI, free daily allowance; for videos it reads the description and, when YouTube provides them, the subtitles), and only the specific leak details it finds (ship names, weapons, events, dates) are posted, with a link to the source. Posts with nothing specific in them are skipped. X (Twitter) isn't supported: it doesn't allow free automatic reading.
 
 | Command | What it does |
 | --- | --- |

@@ -17,5 +17,9 @@ crons = ["*/10 * * * *"]
 binding = "LEAKS_STATE"
 id = "__KV_ID__"
 
+# Workers AI reads each post and pulls out the leak details (free daily allowance).
+[ai]
+binding = "AI"
+
 [observability]
 enabled = true
