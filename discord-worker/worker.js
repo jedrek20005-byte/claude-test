@@ -720,9 +720,8 @@ const COMMAND_HANDLERS = {
     if (!Object.keys(data).length) {
       return reply(`Nobody has saved their fans for ${monthName(month)} yet. Use \`/uma_fans\` to add yours!`, { ephemeral: true });
     }
-    const before = await loadClubFans(env, interaction.guild_id, previousMonth(month), settings);
-    const embed = clubSummary(month, data, before, settings.club?.quota, { partial: month === thisMonth });
-    return jsonResponse({ type: 4, data: { embeds: [embed], allowed_mentions: { parse: [] } } });
+    const embeds = await clubEmbeds(env, interaction.guild_id, month, settings, { partial: month === thisMonth, data });
+    return jsonResponse({ type: 4, data: { embeds, allowed_mentions: { parse: [] } } });
   },
 
   async uma_cards(interaction, env, ctx, origin) {
@@ -1124,6 +1123,61 @@ const who = (id, entry) => (/^\d{15,}$/.test(id) ? `<@${id}>` : `**${escapeMarkd
 const listNames = (entries, limit = 15) =>
   entries.length <= limit ? entries.join(", ") : `${entries.slice(0, limit).join(", ")} +${entries.length - limit} more`;
 
+// Belno's word on how one member is doing, from their last three months.
+function memberNote(now, before, earlier) {
+  if (!before) return "welcome to the club! 🌱";
+  const growth = (now - before) / before;
+  if (earlier && before > earlier && now > before) return "three months up in a row! ⭐";
+  if (growth >= 0.2) return "on fire! 🔥";
+  if (growth > 0.02) return "steady climb 📈";
+  if (growth >= -0.02) return "rock solid 🪨";
+  if (growth > -0.2) return "a little dip 📉";
+  return "rest up, we'll bounce back together 💪";
+}
+
+const shortMonth = (month) => MONTHS[Number(month.slice(5)) - 1].slice(0, 3);
+
+// Every member's fans next to their last two months, with Belno's note on each.
+export function memberComparison(month, data, before, earlier, quota, { partial = false } = {}) {
+  const [prev, prev2] = [previousMonth(month), previousMonth(previousMonth(month))];
+  const members = Object.entries(data).map(([id, entry]) => ({ id, ...entry })).sort((a, b) => b.fans - a.fans);
+  const lines = members.map((m, i) => {
+    const last = before[m.id]?.fans;
+    const older = earlier[m.id]?.fans;
+    const history = [last != null && `${shortMonth(prev)} ${formatFans(last)}`, older != null && `${shortMonth(prev2)} ${formatFans(older)}`]
+      .filter(Boolean).join(" · ");
+    const quotaMark = quota ? (m.fans >= quota ? " ✅" : partial ? " 🏃" : " ❌") : "";
+    return `${i + 1}. ${who(m.id, m)} **${formatFans(m.fans)}**${quotaMark}` +
+      (history ? ` (${history})` : "") + (last ? ` ${change(m.fans, last)}` : "") +
+      ` · ${memberNote(m.fans, last, older)}`;
+  });
+  const gone = Object.entries(before).filter(([id]) => !data[id]).map(([id, entry]) => `${who(id, entry)} (${shortMonth(prev)} ${formatFans(entry.fans)})`);
+  if (gone.length) lines.push("", `💤 **Missing this month:** ${listNames(gone)}`);
+  let description = "";
+  for (const [i, line] of lines.entries()) {
+    if (description.length + line.length > 3900) {
+      description += `\n…and ${lines.length - i} more`;
+      break;
+    }
+    description += (i ? "\n" : "") + line;
+  }
+  return {
+    title: `👥 Every member: ${monthName(month)}${partial ? " (so far)" : ""} vs ${shortMonth(prev)} & ${shortMonth(prev2)}`,
+    description,
+    color: EMBED_COLOR,
+    footer: { text: quota ? `✅ quota done${partial ? " · 🏃 still going" : " · ❌ not reached"} · ▲▼ change vs ${monthName(prev)}` : `▲▼ change vs ${monthName(prev)}` },
+  };
+}
+
+// The summary and the every-member comparison for a month (with the two months before it).
+async function clubEmbeds(env, guildId, month, settings, { partial = false, data } = {}) {
+  data ??= await loadClubFans(env, guildId, month, settings);
+  const before = await loadClubFans(env, guildId, previousMonth(month), settings);
+  const earlier = await loadClubFans(env, guildId, previousMonth(previousMonth(month)), settings);
+  const quota = settings.club?.quota;
+  return [clubSummary(month, data, before, quota, { partial }), memberComparison(month, data, before, earlier, quota, { partial })];
+}
+
 export function clubSummary(month, data, before, quota, { partial = false } = {}) {
   const members = Object.entries(data).map(([id, entry]) => ({ id, ...entry })).sort((a, b) => b.fans - a.fans);
   const total = members.reduce((sum, m) => sum + m.fans, 0);
@@ -1180,11 +1234,11 @@ async function postClubSummary(env, guildId, settings, now) {
   try {
     const data = await loadClubFans(env, guildId, month, settings);
     if (Object.keys(data).length) {
-      const before = await loadClubFans(env, guildId, previousMonth(month), settings);
+      const embeds = await clubEmbeds(env, guildId, month, settings, { data });
       const res = await fetch(`${API}/channels/${club.channelId}/messages`, {
         method: "POST",
         headers: { ...botHeaders(env), "Content-Type": "application/json" },
-        body: JSON.stringify({ embeds: [clubSummary(month, data, before, club.quota)], allowed_mentions: { parse: [] } }),
+        body: JSON.stringify({ embeds, allowed_mentions: { parse: [] } }),
       });
       if (!res.ok) throw new Error(`Discord returned HTTP ${res.status}: ${await res.text()}`);
     }
@@ -1583,6 +1637,7 @@ function gifsPage() {
 const EXAMPLE_FANS = {
   now: { 1: { fans: 41_000_000, name: "Special Week" }, 2: { fans: 32_500_000, name: "Silence Suzuka" }, 3: { fans: 18_000_000, name: "Gold Ship" } },
   before: { 1: { fans: 30_000_000, name: "Special Week" }, 2: { fans: 33_000_000, name: "Silence Suzuka" }, 4: { fans: 25_000_000, name: "Tokai Teio" } },
+  earlier: { 1: { fans: 26_000_000, name: "Special Week" }, 2: { fans: 31_000_000, name: "Silence Suzuka" }, 4: { fans: 24_000_000, name: "Tokai Teio" } },
 };
 
 async function runTest(interaction, env) {
@@ -1617,14 +1672,17 @@ async function sendTest(interaction, env, editUrl) {
       data = await loadClubFans(env, interaction.guild_id, thisMonth, settings);
     }
     if (Object.keys(data).length) {
-      const before = await loadClubFans(env, interaction.guild_id, previousMonth(month), settings);
-      preview = { embeds: [clubSummary(month, data, before, settings.club?.quota, { partial: month === thisMonth })] };
+      preview = { embeds: await clubEmbeds(env, interaction.guild_id, month, settings, { partial: month === thisMonth, data }) };
       note = month === lastMonth
         ? "This is last month's summary, like the one I post on the 1st."
         : "Nobody reported fans for last month, so this is this month so far.";
     } else {
-      const embed = clubSummary(lastMonth, EXAMPLE_FANS.now, EXAMPLE_FANS.before, settings.club?.quota ?? 30_000_000);
-      preview = { embeds: [{ ...embed, title: `${embed.title} (example)` }] };
+      const quota = settings.club?.quota ?? 30_000_000;
+      const embeds = [
+        clubSummary(lastMonth, EXAMPLE_FANS.now, EXAMPLE_FANS.before, quota),
+        memberComparison(lastMonth, EXAMPLE_FANS.now, EXAMPLE_FANS.before, EXAMPLE_FANS.earlier, quota),
+      ];
+      preview = { embeds: embeds.map((embed) => ({ ...embed, title: `${embed.title} (example)` })) };
       note = "Nobody has saved their fans yet, so this is an example with made-up members.";
     }
     if (!settings.club) note += " Turn on the monthly summary with `/uma_quota`.";

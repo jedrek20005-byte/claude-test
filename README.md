@@ -57,7 +57,7 @@ After a successful post, the workflow commits the post history to `state/history
 | `/uma_test what:Monthly reminder` | Manage Server | privately previews the monthly reminder or club summary (an example before anyone reports); `post:True` also sends it in its channel without counting as the real one |
 | `/uma_quota fans:30m` | Manage Server | sets the monthly fan quota per member and posts last month's club summary on the 1st (from 12:00) in this channel (or `channel:`) |
 | `/uma_fans fans:32.5m` | everyone | saves the fans you gained this month (latest number counts; admins can add `member:` to save for someone else) |
-| `/uma_summary` | everyone | club summary for this (or last) month: total, quota done/not yet, top fans, most improved, compared with the month before |
+| `/uma_summary` | everyone | club summary for this (or last) month: total, quota done/not yet, top fans, most improved, compared with the month before, plus a card comparing every member with their last two months (change, quota mark and a note from Belno) |
 | `/uma_cards` | everyone | private link to your card box: tap the support cards you own and pick their limit break |
 | `/uma_deck goal:Most fans` | everyone | builds your best 5-card deck from your cards (goals: **Most fans**, **Race bonus**) |
 | `/uma_races uma:Special Week` | everyone | plans the races that give that Uma the most fans in one career: one per turn, only on surfaces and distances she's A at (`aptitude:` allows B or C), at most 3 in a row (`in_a_row:` 1–6), and only once she has the fans to enter |

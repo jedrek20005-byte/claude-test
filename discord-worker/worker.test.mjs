@@ -5,7 +5,7 @@ import { beforeEach, test } from "node:test";
 import worker, {
   buildDeck, buildEmbed, clearCardCache, clubSummary, deckEmbed, describeSchedule, formatFans, isSafe, localNow,
   makeCardsToken, monthlyDue, parseFans, parseLiveBoard, parseTime, pickImage, postTimes, prettyCharacter, readCardsToken,
-  clearRaceCache, findUma, MOODS, pickGif, planRaces, REACTION_GIFS, runSchedule, umaChoices,
+  clearRaceCache, findUma, memberComparison, MOODS, pickGif, planRaces, REACTION_GIFS, runSchedule, umaChoices,
 } from "./worker.js";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
@@ -1136,4 +1136,43 @@ test("without a debut fan count, the debut counts like the smallest Junior Pre-O
     races: [race("Newcomer", 1, 7, 2, 1000, { grade: "Pre-OP" }), race("Needs 350", 1, 8, 1, 3100, { needed: 350 })],
   };
   assert.deepEqual(planRaces(data, TURF_MEDIUM).races.map((r) => r.name), ["Newcomer", "Needs 350"]);
+});
+
+// ---- Every-member comparison -----------------------------------------------------------
+
+test("the member comparison lists everyone with their last two months and Belno's note", () => {
+  const now = {
+    "111111111111111111": { fans: 40_000_000, name: "Spe" }, "222222222222222222": { fans: 31_000_000, name: "Suz" },
+    "333333333333333333": { fans: 12_000_000, name: "Gol" }, "444444444444444444": { fans: 20_000_000, name: "New" },
+    "555555555555555555": { fans: 30_000_000, name: "Flat" },
+  };
+  const before = {
+    "111111111111111111": { fans: 30_000_000 }, "222222222222222222": { fans: 33_000_000 }, "333333333333333333": { fans: 20_000_000 },
+    "555555555555555555": { fans: 30_000_000 }, "666666666666666666": { fans: 15_000_000, name: "Gone" },
+  };
+  const earlier = { "111111111111111111": { fans: 25_000_000 }, "222222222222222222": { fans: 31_000_000 } };
+  const embed = memberComparison("2026-11", now, before, earlier, 30_000_000);
+  assert.equal(embed.title, "👥 Every member: November 2026 vs Oct & Sep");
+  const lines = embed.description.split("\n");
+  assert.equal(lines[0], "1. <@111111111111111111> **40M** ✅ (Oct 30M · Sep 25M) ▲ 33% · three months up in a row! ⭐");
+  assert.equal(lines[1], "2. <@222222222222222222> **31M** ✅ (Oct 33M · Sep 31M) ▼ 6% · a little dip 📉");
+  assert.equal(lines[2], "3. <@555555555555555555> **30M** ✅ (Oct 30M) = same · rock solid 🪨");
+  assert.equal(lines[3], "4. <@444444444444444444> **20M** ❌ · welcome to the club! 🌱");
+  assert.equal(lines[4], "5. <@333333333333333333> **12M** ❌ (Oct 20M) ▼ 40% · rest up, we'll bounce back together 💪");
+  assert.match(embed.description, /💤 \*\*Missing this month:\*\* <@666666666666666666> \(Oct 15M\)/);
+  assert.match(memberComparison("2026-11", now, before, earlier, 30_000_000, { partial: true }).description, /\*\*12M\*\* 🏃/);
+  assert.doesNotMatch(memberComparison("2026-01", now, {}, {}, null).description, /✅|❌/);
+  assert.match(memberComparison("2026-01", now, {}, {}, null).title, /vs Dec & Nov$/);
+});
+
+test("the summary is posted with the member comparison", async () => {
+  const kv = fakeKV({ guilds: { 777: { timeZone: "UTC", club: { quota: 30_000_000, channelId: "556" } } } });
+  await kv.put("fans:777:2026-10:111111111111111111", "", { metadata: { fans: 30_000_000, name: "A" } });
+  await kv.put("fans:777:2026-09:111111111111111111", "", { metadata: { fans: 20_000_000, name: "A" } });
+  await kv.put("fans:777:2026-11:111111111111111111", "", { metadata: { fans: 45_000_000, name: "A" } });
+  const response = await run(await signedRequest(command("uma_summary")), { ...ENV, UMA_STATE: kv });
+  const { embeds } = (await response.json()).data;
+  assert.equal(embeds.length, 2);
+  assert.match(embeds[1].description, /^1\. <@111111111111111111> \*\*45M\*\* 🏃|^1\. <@111111111111111111> \*\*45M\*\* ✅/);
+  assert.match(embeds[1].description, /\(Oct 30M · Sep 20M\) ▲ 50% · three months up in a row! ⭐/);
 });
