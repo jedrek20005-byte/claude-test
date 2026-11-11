@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
 import worker, {
-  buildDeck, buildEmbed, clearCardCache, clubSummary, deckEmbed, describeSchedule, formatFans, isSafe, localNow,
+  buildDeck, buildEmbed, clearCardCache, clubSummary, daysLeftLine, deckEmbed, describeMonthly, describeSchedule, formatFans, isSafe, localNow,
   makeCardsToken, monthlyDue, parseFans, parseLiveBoard, parseTime, pickImage, postTimes, prettyCharacter, readCardsToken,
   clearRaceCache, findUma, memberComparison, MOODS, pickGif, planRaces, REACTION_GIFS, runSchedule, umaChoices,
 } from "./worker.js";
@@ -592,14 +592,14 @@ test("/uma_say explains when it can't post in the channel", async () => {
 // ---- /uma_monthly ----------------------------------------------------------------
 
 test("monthlyDue: once a month, on the chosen day or the month's last day", () => {
-  const monthly = { day: 25, time: "18:00", lastSent: null };
+  const monthly = { day: 25, time: "18:00", lastSent: null, once: true };
   const at = (iso) => new Date(iso);
   assert.equal(monthlyDue(monthly, at("2026-11-25T16:59:00Z"), "Europe/Berlin"), null); // 17:59 in Berlin
   assert.equal(monthlyDue(monthly, at("2026-11-25T17:00:00Z"), "Europe/Berlin"), "2026-11");
   assert.equal(monthlyDue(monthly, at("2026-11-27T09:00:00Z"), "Europe/Berlin"), "2026-11"); // catches up later in the month
   assert.equal(monthlyDue({ ...monthly, lastSent: "2026-11" }, at("2026-11-28T09:00:00Z"), "Europe/Berlin"), null);
   assert.equal(monthlyDue(monthly, at("2026-11-20T09:00:00Z"), "Europe/Berlin"), null);
-  const last = { day: 31, time: "12:00", lastSent: null };
+  const last = { day: 31, time: "12:00", lastSent: null, once: true };
   assert.equal(monthlyDue(last, at("2026-11-29T12:00:00Z"), "UTC"), null);
   assert.equal(monthlyDue(last, at("2026-11-30T12:00:00Z"), "UTC"), "2026-11"); // November has 30 days
   assert.equal(monthlyDue(last, at("2027-02-28T12:00:00Z"), "UTC"), "2027-02");
@@ -614,7 +614,7 @@ test("/uma_monthly saves the message and shows when it's next sent", async () =>
   ];
   const { data } = await (await run(await signedRequest(asUser("uma_monthly", options)), env)).json();
   assert.equal(data.flags, 64);
-  assert.match(data.content, /in <#555> on day \*\*25\*\* of every month at \*\*18:00\*\* \(Europe\/Berlin\), mentioning <@&4444>/);
+  assert.match(data.content, /in <#555> on every day from day \*\*25\*\* to the end of the month at \*\*18:00\*\* \(Europe\/Berlin\), mentioning <@&4444>/);
   assert.match(data.content, /> Quota ends soon!\n> Go go go/);
   const monthly = kv.json("guilds")["777"].monthly;
   assert.deepEqual(
@@ -632,7 +632,7 @@ test("/uma_monthly without a message opens a box, and the box saves it", async (
   const env = { ...ENV, UMA_STATE: kv };
   const opened = await (await run(await signedRequest(asUser("uma_monthly", [{ name: "day", value: 1 }, { name: "ping", value: "777" }])), env)).json();
   assert.equal(opened.type, 9);
-  assert.match(opened.data.custom_id, /^uma_monthly:1:1200:555:777:0:[\w-]{22}$/);
+  assert.match(opened.data.custom_id, /^uma_monthly:1:1200:555:777:0:0:[\w-]{22}$/);
   assert.match(opened.data.components[0].components[0].value, /it's Belno! 💚/); // pre-filled with Belno's text
   const submit = (custom_id, user = "123456789") => ({
     type: 5, application_id: "4242", token: "interaction-token", guild_id: "777", channel_id: "555",
@@ -640,7 +640,7 @@ test("/uma_monthly without a message opens a box, and the box saves it", async (
     data: { custom_id, components: [{ type: 1, components: [{ custom_id: "text", value: "New month, new quota! 💚" }] }] },
   });
   const saved = (await (await run(await signedRequest(submit(opened.data.custom_id)), env)).json()).data;
-  assert.match(saved.content, /day \*\*1\*\* of every month at \*\*12:00\*\* \(UTC\), mentioning @everyone/);
+  assert.match(saved.content, /every day from day \*\*1\*\* to the end of the month at \*\*12:00\*\* \(UTC\), mentioning @everyone/);
   assert.equal(kv.json("guilds")["777"].monthly.roleId, "everyone"); // picking @everyone gives the server's ID
   assert.equal(kv.json("guilds")["777"].monthly.text, "New month, new quota! 💚");
 
@@ -649,7 +649,7 @@ test("/uma_monthly without a message opens a box, and the box saves it", async (
 });
 
 test("the monthly message is posted once a month, with the role mention", async () => {
-  const monthly = { day: 25, time: "18:00", channelId: "555", roleId: "4444", text: "Quota!", lastSent: "2026-10" };
+  const monthly = { day: 25, time: "18:00", channelId: "555", roleId: "4444", text: "Quota!", lastSent: "2026-10", once: true };
   const kv = fakeKV({ guilds: { 777: { timeZone: "UTC", monthly } } });
   const env = { ...ENV, UMA_STATE: kv };
   await runSchedule(env, new Date("2026-11-25T17:55:00Z"));
@@ -666,7 +666,7 @@ test("the monthly message is posted once a month, with the role mention", async 
 });
 
 test("a failed monthly message is retried, and /uma_monthly_off stops it", async () => {
-  const monthly = { day: 1, time: "00:00", channelId: "555", roleId: null, text: "Hi", lastSent: null };
+  const monthly = { day: 1, time: "00:00", channelId: "555", roleId: null, text: "Hi", lastSent: null, once: true };
   const kv = fakeKV({ guilds: { 777: { timeZone: "UTC", monthly } } });
   const env = { ...ENV, UMA_STATE: kv };
   routes["discord.com"] = () => Response.json({ message: "Missing Access" }, { status: 403 });
@@ -801,7 +801,7 @@ test("last month's summary is posted on the 1st from 12:00, once", async () => {
 const testCalls = () => calls.filter((c) => /\/channels\/\d+\/messages$/.test(c.url) && c.init.method === "POST");
 
 test("/uma_test previews the monthly reminder privately, or sends it for real", async () => {
-  const monthly = { day: 25, time: "18:00", channelId: "556", roleId: "4444", text: "Quota time!", lastSent: "2026-10" };
+  const monthly = { day: 25, time: "18:00", channelId: "556", roleId: "4444", text: "Quota time!", lastSent: "2026-10", once: true };
   const kv = fakeKV({ guilds: { 777: { timeZone: "UTC", monthly } } });
   const env = { ...ENV, UMA_STATE: kv };
   const response = await run(await signedRequest(command("uma_test", [{ name: "what", value: "monthly" }])), env);
@@ -1024,7 +1024,7 @@ test("/uma_monthly can add a new GIF each month, also through the message box", 
   assert.equal(kv.json("guilds")["777"].monthly.gif, "happy");
 
   const opened = (await (await run(await signedRequest(asUser("uma_monthly", [{ name: "day", value: 2 }, { name: "gif", value: "random" }])), env)).json()).data;
-  assert.match(opened.custom_id, /^uma_monthly:2:1200:555:0:random:[\w-]{22}$/);
+  assert.match(opened.custom_id, /^uma_monthly:2:1200:555:0:random:0:[\w-]{22}$/);
   const submit = {
     type: 5, application_id: "4242", token: "interaction-token", guild_id: "777", channel_id: "555",
     member: { user: { id: "123456789" } },
@@ -1037,7 +1037,7 @@ test("/uma_monthly can add a new GIF each month, also through the message box", 
   const tampered = { ...submit, data: { ...submit.data, custom_id: opened.custom_id.replace(":random:", ":sad:") } };
   assert.match((await (await run(await signedRequest(tampered), env)).json()).data.content, /didn't come from/);
 
-  const monthly = { day: 25, time: "18:00", channelId: "555", roleId: null, gif: "sad", text: "Quota!", lastSent: "2026-10" };
+  const monthly = { day: 25, time: "18:00", channelId: "555", roleId: null, gif: "sad", text: "Quota!", lastSent: "2026-10", once: true };
   const posting = fakeKV({ guilds: { 777: { timeZone: "UTC", monthly } } });
   await runSchedule({ ...ENV, UMA_STATE: posting }, new Date("2026-11-25T18:00:00Z"));
   const body = JSON.parse(dailyCalls()[0].init.body);
@@ -1175,4 +1175,63 @@ test("the summary is posted with the member comparison", async () => {
   assert.equal(embeds.length, 2);
   assert.match(embeds[1].description, /^1\. <@111111111111111111> \*\*45M\*\* 🏃|^1\. <@111111111111111111> \*\*45M\*\* ✅/);
   assert.match(embeds[1].description, /\(Oct 30M · Sep 20M\) ▲ 50% · three months up in a row! ⭐/);
+});
+
+// ---- Daily reminders until the month ends ---------------------------------------------
+
+test("by default the reminder goes out every day from the chosen day to the month's end", () => {
+  const monthly = { day: 25, time: "18:00", lastSent: null };
+  const at = (iso) => new Date(iso);
+  assert.equal(monthlyDue(monthly, at("2026-11-24T19:00:00Z"), "UTC"), null); // before the day
+  assert.equal(monthlyDue(monthly, at("2026-11-25T17:59:00Z"), "UTC"), null); // before the time
+  assert.equal(monthlyDue(monthly, at("2026-11-25T18:00:00Z"), "UTC"), "2026-11-25");
+  assert.equal(monthlyDue({ ...monthly, lastSent: "2026-11-25" }, at("2026-11-25T23:00:00Z"), "UTC"), null); // once a day
+  assert.equal(monthlyDue({ ...monthly, lastSent: "2026-11-25" }, at("2026-11-26T18:05:00Z"), "UTC"), "2026-11-26");
+  assert.equal(monthlyDue({ ...monthly, lastSent: "2026-11-29" }, at("2026-11-30T18:00:00Z"), "UTC"), "2026-11-30"); // last day
+  assert.equal(monthlyDue({ ...monthly, lastSent: "2026-11-30" }, at("2026-12-01T18:00:00Z"), "UTC"), null); // a new month waits for the 25th
+  assert.equal(monthlyDue({ ...monthly, lastSent: "2026-11" }, at("2026-11-26T18:00:00Z"), "UTC"), "2026-11-26"); // saved by the old version
+  assert.equal(monthlyDue({ day: 31, time: "12:00" }, at("2027-02-28T12:00:00Z"), "UTC"), "2027-02-28"); // short month: its last day
+});
+
+test("the daily reminder says when it's next, and counts down the days left", () => {
+  const monthly = { day: 25, time: "18:00", lastSent: "2026-11-26" };
+  assert.match(describeMonthly(monthly, "UTC", new Date("2026-11-26T19:00:00Z")), /^every day from day \*\*25\*\* to the end of the month at \*\*18:00\*\* \(UTC\); next on 27 November 2026$/);
+  assert.match(describeMonthly({ ...monthly, lastSent: "2026-11-30" }, "UTC", new Date("2026-11-30T19:00:00Z")), /next on 25 December 2026$/);
+  assert.match(describeMonthly({ ...monthly, lastSent: "2026-10-31" }, "UTC", new Date("2026-11-10T19:00:00Z")), /next on 25 November 2026$/);
+  assert.match(describeMonthly({ ...monthly, once: true, lastSent: "2026-11" }, "UTC", new Date("2026-11-26T19:00:00Z")), /^day \*\*25\*\* of every month .*next on 25 December 2026$/);
+  assert.equal(daysLeftLine(new Date("2026-11-25T18:00:00Z"), "UTC"), "-# ⏳ 5 days left this month");
+  assert.equal(daysLeftLine(new Date("2026-11-29T18:00:00Z"), "UTC"), "-# ⏳ 1 day left this month");
+  assert.equal(daysLeftLine(new Date("2026-11-30T18:00:00Z"), "UTC"), "-# 🏁 Last day of the month: final push, everyone!");
+});
+
+test("the daily reminder is posted each day with the countdown", async () => {
+  const monthly = { day: 29, time: "18:00", channelId: "555", roleId: null, text: "Run your races!", lastSent: null };
+  const kv = fakeKV({ guilds: { 777: { timeZone: "UTC", monthly } } });
+  const env = { ...ENV, UMA_STATE: kv };
+  await runSchedule(env, new Date("2026-11-29T18:00:00Z"));
+  await runSchedule(env, new Date("2026-11-29T18:05:00Z"));
+  await runSchedule(env, new Date("2026-11-30T18:00:00Z"));
+  await runSchedule(env, new Date("2026-12-01T18:00:00Z"));
+  const bodies = dailyCalls().map((c) => JSON.parse(c.init.body).content);
+  assert.deepEqual(bodies, ["Run your races!\n-# ⏳ 1 day left this month", "Run your races!\n-# 🏁 Last day of the month: final push, everyone!"]);
+  assert.equal(kv.json("guilds")["777"].monthly.lastSent, "2026-11-30");
+});
+
+test("/uma_monthly once:True keeps it to one post a month, also through the message box", async () => {
+  const kv = fakeKV();
+  const env = { ...ENV, UMA_STATE: kv };
+  const saved = (await (await run(await signedRequest(asUser("uma_monthly", [
+    { name: "day", value: 25 }, { name: "message", value: "Quota!" }, { name: "once", value: true },
+  ])), env)).json()).data;
+  assert.match(saved.content, /on day \*\*25\*\* of every month at \*\*12:00\*\*/);
+  assert.equal(kv.json("guilds")["777"].monthly.once, true);
+  const opened = (await (await run(await signedRequest(asUser("uma_monthly", [{ name: "day", value: 3 }, { name: "once", value: true }])), env)).json()).data;
+  assert.match(opened.custom_id, /^uma_monthly:3:1200:555:0:0:1:[\w-]{22}$/);
+  const submit = {
+    type: 5, application_id: "4242", token: "interaction-token", guild_id: "777", channel_id: "555", member: { user: { id: "123456789" } },
+    data: { custom_id: opened.custom_id, components: [{ type: 1, components: [{ custom_id: "text", value: "Hi!" }] }] },
+  };
+  await run(await signedRequest(submit), env);
+  assert.equal(kv.json("guilds")["777"].monthly.once, true);
+  assert.equal(kv.json("guilds")["777"].monthly.day, 3);
 });

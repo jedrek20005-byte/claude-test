@@ -120,7 +120,7 @@ const COMMANDS = [
   },
   {
     name: "uma_monthly",
-    description: "Post a message every month, like a club quota reminder",
+    description: "Remind the club every day from a day of the month until it ends (like a quota reminder)",
     type: 1,
     ...ADMIN_ONLY,
     options: [
@@ -138,7 +138,8 @@ const COMMANDS = [
         type: 7, name: "channel", description: "Where to post it (this channel if left empty)",
         required: false, channel_types: [0, 5, 10, 11, 12],
       },
-      { type: 3, name: "gif", description: "Add one of my GIFs, a new one each month (none if left empty)", required: false, choices: MOOD_CHOICES },
+      { type: 3, name: "gif", description: "Add one of my GIFs, a new one each time (none if left empty)", required: false, choices: MOOD_CHOICES },
+      { type: 5, name: "once", description: "Post only on that day, not every day until the month ends", required: false },
     ],
   },
   { name: "uma_monthly_off", description: "Stop the monthly message", type: 1, ...ADMIN_ONLY },
@@ -759,12 +760,13 @@ const COMMAND_HANDLERS = {
     const monthly = {
       day: Number(options.day), time, channelId: options.channel || interaction.channel_id, roleId: options.ping || null,
       gif: MOOD_CHOICES.some((choice) => choice.value === options.gif) ? options.gif : null,
+      ...(options.once ? { once: true } : {}),
     };
     if (options.message) {
       return saveMonthly(interaction, env, { ...monthly, text: options.message });
     }
     // No text given: open a box for a longer message, signed like /uma_say's.
-    const id = `${monthly.day}:${time.replace(":", "")}:${monthly.channelId}:${monthly.roleId || 0}:${monthly.gif || 0}`;
+    const id = `${monthly.day}:${time.replace(":", "")}:${monthly.channelId}:${monthly.roleId || 0}:${monthly.gif || 0}:${monthly.once ? 1 : 0}`;
     const signature = await sign(env, `uma-monthly:${userOf(interaction).id}:${id}`);
     return jsonResponse({
       type: 9,
@@ -907,25 +909,41 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
   "October", "November", "December"];
 const daysIn = (year, month) => new Date(Date.UTC(year, month, 0)).getUTCDate();
 
-// The month ("2026-11") whose message is due now and not sent yet, or null.
-// In months shorter than the chosen day, it's sent on the last day.
+// The reminder that's due now and not sent yet, or null. By default it goes out
+// every day from the chosen day to the end of the month (key "2026-11-25");
+// with `once` only on that day (key "2026-11"). In months shorter than the
+// chosen day, it starts on the last day.
 export function monthlyDue(monthly, now, timeZone) {
   const local = localNow(now, timeZone);
   const [year, month, day] = local.day.split("-").map(Number);
   const dueDay = Math.min(monthly.day, daysIn(year, month));
-  const passed = day > dueDay || (day === dueDay && local.time >= monthly.time);
-  const monthKey = local.day.slice(0, 7);
-  return passed && monthly.lastSent !== monthKey ? monthKey : null;
+  if (monthly.once) {
+    const passed = day > dueDay || (day === dueDay && local.time >= monthly.time);
+    const monthKey = local.day.slice(0, 7);
+    return passed && monthly.lastSent !== monthKey ? monthKey : null;
+  }
+  if (day < dueDay || local.time < monthly.time) return null;
+  return monthly.lastSent === local.day ? null : local.day;
 }
+
+const dateText = (day, month, year) => `${day} ${MONTHS[month - 1]} ${year}`;
 
 // "25 November 2026": the next time the message goes out.
 function nextMonthlyDate(monthly, now, timeZone) {
   const local = localNow(now, timeZone);
-  let [year, month] = local.day.split("-").map(Number);
+  let [year, month, day] = local.day.split("-").map(Number);
+  const dueDay = Math.min(monthly.day, daysIn(year, month));
+  if (!monthly.once) {
+    if (day < dueDay) return dateText(dueDay, month, year);
+    if (monthly.lastSent !== local.day) return dateText(day, month, year); // later today
+    if (day < daysIn(year, month)) return dateText(day + 1, month, year);
+    [year, month] = month === 12 ? [year + 1, 1] : [year, month + 1];
+    return dateText(Math.min(monthly.day, daysIn(year, month)), month, year);
+  }
   if (monthly.lastSent === local.day.slice(0, 7)) {
     [year, month] = month === 12 ? [year + 1, 1] : [year, month + 1];
   }
-  return `${Math.min(monthly.day, daysIn(year, month))} ${MONTHS[month - 1]} ${year}`;
+  return dateText(Math.min(monthly.day, daysIn(year, month)), month, year);
 }
 
 export function describeMonthly(monthly, timeZone, now = new Date()) {
@@ -933,8 +951,19 @@ export function describeMonthly(monthly, timeZone, now = new Date()) {
   const gif = monthly.gif
     ? `, with ${monthly.gif === "random" ? "one of my GIFs" : `a ${MOODS[monthly.gif]?.label.split(" ")[0].toLowerCase() ?? ""} GIF`}`
     : "";
-  return `day **${monthly.day}** of every month at **${monthly.time}** (${timeZone})${ping}${gif}; ` +
-    `next on ${nextMonthlyDate(monthly, now, timeZone)}`;
+  const when = monthly.once
+    ? `day **${monthly.day}** of every month at **${monthly.time}**`
+    : `every day from day **${monthly.day}** to the end of the month at **${monthly.time}**`;
+  return `${when} (${timeZone})${ping}${gif}; next on ${nextMonthlyDate(monthly, now, timeZone)}`;
+}
+
+// The countdown under a daily reminder.
+export function daysLeftLine(now, timeZone) {
+  const local = localNow(now, timeZone);
+  const [year, month, day] = local.day.split("-").map(Number);
+  const left = daysIn(year, month) - day;
+  if (left === 0) return "-# 🏁 Last day of the month: final push, everyone!";
+  return `-# ⏳ ${left} day${left === 1 ? "" : "s"} left this month`;
 }
 
 // Belno Light's default monthly reminder (pre-filled in the /uma_monthly box).
@@ -943,20 +972,22 @@ const BELNO_REMINDER =
   "Our club's fan quota for this month ends soon. If you haven't reached it yet, let's run a few more races together!\n" +
   "I'll be cheering for you the whole way. Ganbatte! 🏇✨";
 
-function monthlyContent(monthly) {
+function monthlyContent(monthly, { countdown = "" } = {}) {
   const gif = monthly.gif ? { embeds: [gifEmbed(pickGif(monthly.gif))] } : {};
-  if (!monthly.roleId) return { content: monthly.text, allowed_mentions: { parse: [] }, ...gif };
+  const text = countdown ? `${monthly.text}\n${countdown}` : monthly.text;
+  if (!monthly.roleId) return { content: text, allowed_mentions: { parse: [] }, ...gif };
   if (monthly.roleId === "everyone") {
-    return { content: `@everyone\n${monthly.text}`, allowed_mentions: { parse: ["everyone"] }, ...gif };
+    return { content: `@everyone\n${text}`, allowed_mentions: { parse: ["everyone"] }, ...gif };
   }
-  return { content: `<@&${monthly.roleId}>\n${monthly.text}`, allowed_mentions: { parse: [], roles: [monthly.roleId] }, ...gif };
+  return { content: `<@&${monthly.roleId}>\n${text}`, allowed_mentions: { parse: [], roles: [monthly.roleId] }, ...gif };
 }
 
 async function saveMonthly(interaction, env, monthly, { now = new Date() } = {}) {
   // Picking @everyone in a role option gives the server's own ID.
   if (monthly.roleId === interaction.guild_id) monthly.roleId = "everyone";
   const guild = { ...DEFAULT_SETTINGS, ...(await loadGuilds(env))[interaction.guild_id] };
-  // If this month's moment has already passed, start next month rather than posting right away.
+  // If today's (or, with once, this month's) moment has already passed, start
+  // with the next one rather than posting right away.
   const thisMonth = monthlyDue({ ...monthly, lastSent: null }, now, guild.timeZone);
   const saved = { ...monthly, lastSent: thisMonth, lastError: null, retryAfter: 0 };
   await updateGuild(env, interaction.guild_id, { monthly: saved });
@@ -973,15 +1004,16 @@ async function saveMonthly(interaction, env, monthly, { now = new Date() } = {})
 }
 
 async function monthlyFromModal(interaction, env) {
-  const [, day, hhmm, channelId, roleId, gif, signature] = interaction.data.custom_id.split(":");
-  const id = `${day}:${hhmm}:${channelId}:${roleId}:${gif}`;
+  const [, day, hhmm, channelId, roleId, gif, once, signature] = interaction.data.custom_id.split(":");
+  const id = `${day}:${hhmm}:${channelId}:${roleId}:${gif}:${once}`;
   const text = interaction.data.components?.[0]?.components?.[0]?.value;
   if (signature !== (await sign(env, `uma-monthly:${userOf(interaction).id}:${id}`)) || !text) {
     return reply("That message box didn't come from `/uma_monthly`, so I didn't save it.", { ephemeral: true });
   }
   const time = `${hhmm.slice(0, 2)}:${hhmm.slice(2)}`;
   return saveMonthly(interaction, env, {
-    day: Number(day), time, channelId, roleId: roleId === "0" ? null : roleId, gif: gif === "0" ? null : gif, text,
+    day: Number(day), time, channelId, roleId: roleId === "0" ? null : roleId, gif: gif === "0" ? null : gif,
+    ...(once === "1" ? { once: true } : {}), text,
   });
 }
 
@@ -993,7 +1025,7 @@ async function postMonthlyMessage(env, guildId, settings, now) {
     const res = await fetch(`${API}/channels/${monthly.channelId}/messages`, {
       method: "POST",
       headers: { ...botHeaders(env), "Content-Type": "application/json" },
-      body: JSON.stringify(monthlyContent(monthly)),
+      body: JSON.stringify(monthlyContent(monthly, { countdown: monthly.once ? "" : daysLeftLine(now, settings.timeZone) })),
     });
     if (!res.ok) throw new Error(`Discord returned HTTP ${res.status}: ${await res.text()}`);
     return { lastSent: month, lastError: null, retryAfter: 0 };
