@@ -961,28 +961,33 @@ export function describeMonthly(monthly, timeZone, now = new Date()) {
 // in the month: calm early on, more urgent near the end. Each stage has a few
 // lines, so the message changes from one day to the next.
 const COUNTDOWN_STAGES = [
+  { from: 14, lines: [
+    "Good luck with today's runs, trainers! I'll be cheering quietly from the stands 🌸",
+    "A steady start makes a strong finish. Let's have a nice day of training 💚",
+    "Remember to have fun out there! Every race brings us closer 🏇",
+  ] },
   { from: 7, lines: [
-    "Plenty of time left, but every race counts! Let's keep a steady pace 🏇",
-    "No rush yet, trainers. A few races a day and we'll get there easily 💚",
-    "Good time to plan your runs! Steady training wins the month ✨",
+    "You're doing great, trainers! Keep that steady pace going! 🏇💚",
+    "Nice work so far! A few races a day and we'll get there for sure! ✨",
+    "I'm cheering for you! Let's keep building those fans together! 📣",
   ] },
   { from: 4, lines: [
-    "The finish line is coming into view! Let's pick up the pace 🏃‍♀️",
-    "Less than a week to go! If you're behind on your quota, now's the time 💪",
-    "Getting closer! A few extra races today would really help the club 📈",
+    "Less than a week left! Let's pick up the pace, trainers! I believe in you! 🔥💪",
+    "The finish line is in sight! Come on, everyone! Push a little harder! 🏃‍♀️📣",
+    "This is where champions are made! Go, go, go! You can do it, trainers! 🏆✨",
   ] },
   { from: 2, lines: [
-    "Almost there! Just a couple of days left, let's give it everything 🔥",
-    "Final stretch, everyone! Don't let your quota slip away now ⚡",
-    "We're on the last straight! Every race you run today matters 🏁",
+    "FINAL STRETCH!! Give it everything you've got, trainers!! 🔥🔥🏇",
+    "Almost there!! I'm cheering as loud as I can!! You can do it!! 📣📣💚",
+    "Last straight, everyone!! Every single race counts now!! ⚡⚡🏁",
   ] },
   { from: 1, lines: [
-    "Tomorrow is the very last day! Make today count, trainers ⏰",
-    "Only one day left after today! Let's finish this together 💚",
+    "ONLY ONE DAY LEFT AFTER TODAY!! Let's GO, trainers!! I'm so proud of you!! 🔥📣🏆",
+    "TOMORROW IS THE LAST DAY!! Run, run, RUN!! I'm right here cheering for you!! 💨💚💨",
   ] },
   { from: 0, lines: [
-    "🏁 Last day of the month! Final push, everyone, I believe in you! 🏆",
-    "🏁 It's the last day! Whatever you can still run, run it now! 💨",
+    "🏁 IT'S THE LAST DAY!!! FULL POWER, EVERYONE!!! GANBATTE, TRAINERS!!! I BELIEVE IN YOU!!! 🔥🔥🏆📣💚",
+    "🏁 FINAL DAY!!! EVERY RACE YOU RUN NOW IS A VICTORY!!! LET'S FINISH THIS TOGETHER!!! 💨💨🏇✨🏆",
   ] },
 ];
 

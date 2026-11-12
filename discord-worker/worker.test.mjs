@@ -1201,10 +1201,11 @@ test("the daily reminder says when it's next, and counts down the days left", ()
   assert.match(describeMonthly({ ...monthly, once: true, lastSent: "2026-11" }, "UTC", new Date("2026-11-26T19:00:00Z")), /^day \*\*25\*\* of every month .*next on 25 December 2026$/);
   const at = (day) => countdownMessage(new Date(`2026-11-${day}T18:00:00Z`), "UTC");
   assert.match(at(10), /^\*\*.+\*\*\n-# ⏳ 20 days left this month$/);
-  assert.match(at(10), /Plenty of time|No rush yet|plan your runs/); // a week or more: calm
-  assert.match(at(25), /finish line|Less than a week|Getting closer/); // 5 left
-  assert.match(at(27), /Almost there|Final stretch|last straight/); // 3 left
-  assert.match(at(29), /Tomorrow is the very last day|Only one day left/);
+  assert.match(at(10), /cheering quietly|steady start|have fun out there/); // two weeks or more: gentle
+  assert.match(at(18), /doing great|Nice work so far|I'm cheering for you/); // 12 left: warmer
+  assert.match(at(25), /Less than a week|finish line is in sight|champions are made/); // 5 left: louder
+  assert.match(at(27), /FINAL STRETCH!!|Almost there!!|Last straight, everyone!!/); // 3 left: shouting
+  assert.match(at(29), /ONLY ONE DAY LEFT|TOMORROW IS THE LAST DAY/);
   assert.equal(at(29).split("\n")[1], "-# ⏳ 1 day left this month");
   assert.match(at(30), /^\*\*🏁 .+\*\*\n-# ⏳ Ends tonight$/);
   assert.notEqual(at(25), at(26)); // a different line from one day to the next
@@ -1220,7 +1221,7 @@ test("the daily reminder is posted each day with the countdown", async () => {
   await runSchedule(env, new Date("2026-12-01T18:00:00Z"));
   const bodies = dailyCalls().map((c) => JSON.parse(c.init.body).content);
   assert.equal(bodies.length, 2);
-  assert.match(bodies[0], /^Run your races!\n\*\*(Tomorrow is the very last day|Only one day left).+\*\*\n-# ⏳ 1 day left this month$/);
+  assert.match(bodies[0], /^Run your races!\n\*\*(ONLY ONE DAY LEFT|TOMORROW IS THE LAST DAY).+\*\*\n-# ⏳ 1 day left this month$/);
   assert.match(bodies[1], /^Run your races!\n\*\*🏁 .+\*\*\n-# ⏳ Ends tonight$/);
   assert.equal(kv.json("guilds")["777"].monthly.lastSent, "2026-11-30");
 });
@@ -1242,4 +1243,13 @@ test("/uma_monthly once:True keeps it to one post a month, also through the mess
   await run(await signedRequest(submit), env);
   assert.equal(kv.json("guilds")["777"].monthly.once, true);
   assert.equal(kv.json("guilds")["777"].monthly.day, 3);
+});
+
+test("the cheering gets louder as the month runs out", () => {
+  const loudness = (day) => {
+    const line = countdownMessage(new Date(`2026-11-${String(day).padStart(2, "0")}T18:00:00Z`), "UTC").split("\n")[0];
+    return (line.match(/!/g) || []).length + (line.match(/[A-Z]{3,}/g) || []).length;
+  };
+  const stages = [10, 18, 25, 27, 29, 30].map(loudness);
+  for (let i = 1; i < stages.length; i++) assert.ok(stages[i] > stages[i - 1], `stage ${i} should be louder: ${stages}`);
 });
