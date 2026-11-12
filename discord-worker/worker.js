@@ -957,13 +957,43 @@ export function describeMonthly(monthly, timeZone, now = new Date()) {
   return `${when} (${timeZone})${ping}${gif}; next on ${nextMonthlyDate(monthly, now, timeZone)}`;
 }
 
-// The countdown under a daily reminder.
-export function daysLeftLine(now, timeZone) {
+// What Belno adds under a daily reminder, depending on how many days are left
+// in the month: calm early on, more urgent near the end. Each stage has a few
+// lines, so the message changes from one day to the next.
+const COUNTDOWN_STAGES = [
+  { from: 7, lines: [
+    "Plenty of time left, but every race counts! Let's keep a steady pace 🏇",
+    "No rush yet, trainers. A few races a day and we'll get there easily 💚",
+    "Good time to plan your runs! Steady training wins the month ✨",
+  ] },
+  { from: 4, lines: [
+    "The finish line is coming into view! Let's pick up the pace 🏃‍♀️",
+    "Less than a week to go! If you're behind on your quota, now's the time 💪",
+    "Getting closer! A few extra races today would really help the club 📈",
+  ] },
+  { from: 2, lines: [
+    "Almost there! Just a couple of days left, let's give it everything 🔥",
+    "Final stretch, everyone! Don't let your quota slip away now ⚡",
+    "We're on the last straight! Every race you run today matters 🏁",
+  ] },
+  { from: 1, lines: [
+    "Tomorrow is the very last day! Make today count, trainers ⏰",
+    "Only one day left after today! Let's finish this together 💚",
+  ] },
+  { from: 0, lines: [
+    "🏁 Last day of the month! Final push, everyone, I believe in you! 🏆",
+    "🏁 It's the last day! Whatever you can still run, run it now! 💨",
+  ] },
+];
+
+export function countdownMessage(now, timeZone) {
   const local = localNow(now, timeZone);
   const [year, month, day] = local.day.split("-").map(Number);
   const left = daysIn(year, month) - day;
-  if (left === 0) return "-# 🏁 Last day of the month: final push, everyone!";
-  return `-# ⏳ ${left} day${left === 1 ? "" : "s"} left this month`;
+  const stage = COUNTDOWN_STAGES.find((s) => left >= s.from);
+  const line = stage.lines[day % stage.lines.length];
+  const count = left === 0 ? "Ends tonight" : `${left} day${left === 1 ? "" : "s"} left this month`;
+  return `**${line}**\n-# ⏳ ${count}`;
 }
 
 // Belno Light's default monthly reminder (pre-filled in the /uma_monthly box).
@@ -1025,7 +1055,7 @@ async function postMonthlyMessage(env, guildId, settings, now) {
     const res = await fetch(`${API}/channels/${monthly.channelId}/messages`, {
       method: "POST",
       headers: { ...botHeaders(env), "Content-Type": "application/json" },
-      body: JSON.stringify(monthlyContent(monthly, { countdown: monthly.once ? "" : daysLeftLine(now, settings.timeZone) })),
+      body: JSON.stringify(monthlyContent(monthly, { countdown: monthly.once ? "" : countdownMessage(now, settings.timeZone) })),
     });
     if (!res.ok) throw new Error(`Discord returned HTTP ${res.status}: ${await res.text()}`);
     return { lastSent: month, lastError: null, retryAfter: 0 };

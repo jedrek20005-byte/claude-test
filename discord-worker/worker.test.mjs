@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
 import worker, {
-  buildDeck, buildEmbed, clearCardCache, clubSummary, daysLeftLine, deckEmbed, describeMonthly, describeSchedule, formatFans, isSafe, localNow,
+  buildDeck, buildEmbed, clearCardCache, clubSummary, countdownMessage, deckEmbed, describeMonthly, describeSchedule, formatFans, isSafe, localNow,
   makeCardsToken, monthlyDue, parseFans, parseLiveBoard, parseTime, pickImage, postTimes, prettyCharacter, readCardsToken,
   clearRaceCache, findUma, memberComparison, MOODS, pickGif, planRaces, REACTION_GIFS, runSchedule, umaChoices,
 } from "./worker.js";
@@ -1199,9 +1199,15 @@ test("the daily reminder says when it's next, and counts down the days left", ()
   assert.match(describeMonthly({ ...monthly, lastSent: "2026-11-30" }, "UTC", new Date("2026-11-30T19:00:00Z")), /next on 25 December 2026$/);
   assert.match(describeMonthly({ ...monthly, lastSent: "2026-10-31" }, "UTC", new Date("2026-11-10T19:00:00Z")), /next on 25 November 2026$/);
   assert.match(describeMonthly({ ...monthly, once: true, lastSent: "2026-11" }, "UTC", new Date("2026-11-26T19:00:00Z")), /^day \*\*25\*\* of every month .*next on 25 December 2026$/);
-  assert.equal(daysLeftLine(new Date("2026-11-25T18:00:00Z"), "UTC"), "-# ⏳ 5 days left this month");
-  assert.equal(daysLeftLine(new Date("2026-11-29T18:00:00Z"), "UTC"), "-# ⏳ 1 day left this month");
-  assert.equal(daysLeftLine(new Date("2026-11-30T18:00:00Z"), "UTC"), "-# 🏁 Last day of the month: final push, everyone!");
+  const at = (day) => countdownMessage(new Date(`2026-11-${day}T18:00:00Z`), "UTC");
+  assert.match(at(10), /^\*\*.+\*\*\n-# ⏳ 20 days left this month$/);
+  assert.match(at(10), /Plenty of time|No rush yet|plan your runs/); // a week or more: calm
+  assert.match(at(25), /finish line|Less than a week|Getting closer/); // 5 left
+  assert.match(at(27), /Almost there|Final stretch|last straight/); // 3 left
+  assert.match(at(29), /Tomorrow is the very last day|Only one day left/);
+  assert.equal(at(29).split("\n")[1], "-# ⏳ 1 day left this month");
+  assert.match(at(30), /^\*\*🏁 .+\*\*\n-# ⏳ Ends tonight$/);
+  assert.notEqual(at(25), at(26)); // a different line from one day to the next
 });
 
 test("the daily reminder is posted each day with the countdown", async () => {
@@ -1213,7 +1219,9 @@ test("the daily reminder is posted each day with the countdown", async () => {
   await runSchedule(env, new Date("2026-11-30T18:00:00Z"));
   await runSchedule(env, new Date("2026-12-01T18:00:00Z"));
   const bodies = dailyCalls().map((c) => JSON.parse(c.init.body).content);
-  assert.deepEqual(bodies, ["Run your races!\n-# ⏳ 1 day left this month", "Run your races!\n-# 🏁 Last day of the month: final push, everyone!"]);
+  assert.equal(bodies.length, 2);
+  assert.match(bodies[0], /^Run your races!\n\*\*(Tomorrow is the very last day|Only one day left).+\*\*\n-# ⏳ 1 day left this month$/);
+  assert.match(bodies[1], /^Run your races!\n\*\*🏁 .+\*\*\n-# ⏳ Ends tonight$/);
   assert.equal(kv.json("guilds")["777"].monthly.lastSent, "2026-11-30");
 });
 
