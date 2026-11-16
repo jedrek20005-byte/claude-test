@@ -1,5 +1,5 @@
 {
-"generated":"2026-11-07T15:45:05Z",
+"generated":"2026-11-16T05:58:47Z",
 "source":"GameTora (gametora.com), from the game's master data",
 "debut_fans":0,
 "races":[
@@ -506,7 +506,7 @@
 {"id":103401,"name":"Inari One","title":"Edomurasaki","aptitude":{"turf":"A","dirt":"A","short":"F","mile":"B","medium":"A","long":"A"}},
 {"id":103402,"name":"Inari One","title":"Golden Dream","aptitude":{"turf":"A","dirt":"A","short":"F","mile":"B","medium":"A","long":"A"}},
 {"id":103101,"name":"Ines Fujin","title":"Always Electrifying","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"A","medium":"A","long":"C"}},
-{"id":103102,"name":"Ines Fujin","title":"Melt Your Heart","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"A","medium":"A","long":"C"},"jp_only":true},
+{"id":103102,"name":"Ines Fujin","title":"Melt Your Heart","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"A","medium":"A","long":"C"}},
 {"id":103103,"name":"Ines Fujin","title":"Hello Hello Island","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"A","medium":"A","long":"C"},"jp_only":true},
 {"id":109401,"name":"Jungle Pocket","title":"Ruler's Battle Cry","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"C","medium":"A","long":"B"},"jp_only":true},
 {"id":109402,"name":"Jungle Pocket","title":"Vermilion Head","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"C","medium":"A","long":"B"},"jp_only":true},
@@ -558,7 +558,7 @@
 {"id":108601,"name":"Mejiro Ramonu","title":"Onyx Line","aptitude":{"turf":"A","dirt":"F","short":"B","mile":"A","medium":"A","long":"E"},"jp_only":true},
 {"id":108602,"name":"Mejiro Ramonu","title":"Untouchable Eden","aptitude":{"turf":"A","dirt":"F","short":"B","mile":"A","medium":"A","long":"E"},"jp_only":true},
 {"id":102701,"name":"Mejiro Ryan","title":"Down the Line","aptitude":{"turf":"A","dirt":"G","short":"E","mile":"C","medium":"A","long":"B"}},
-{"id":102702,"name":"Mejiro Ryan","title":"Marguerite Latte","aptitude":{"turf":"A","dirt":"G","short":"E","mile":"C","medium":"A","long":"B"},"jp_only":true},
+{"id":102702,"name":"Mejiro Ryan","title":"Marguerite Latte","aptitude":{"turf":"A","dirt":"G","short":"E","mile":"C","medium":"A","long":"B"}},
 {"id":102601,"name":"Mihono Bourbon","title":"MB-19890425","aptitude":{"turf":"A","dirt":"G","short":"C","mile":"B","medium":"A","long":"B"}},
 {"id":102602,"name":"Mihono Bourbon","title":"CODE: ICING","aptitude":{"turf":"A","dirt":"G","short":"C","mile":"B","medium":"A","long":"B"}},
 {"id":105701,"name":"Mr. C.B.","title":"Clear Bliss","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"B","medium":"A","long":"A"},"jp_only":true},
@@ -679,6 +679,7 @@
 {"id":107802,"name":"Yamanin Zephyr","title":"Sugary Wind","aptitude":{"turf":"A","dirt":"D","short":"B","mile":"A","medium":"A","long":"G"},"jp_only":true},
 {"id":102901,"name":"Yukino Bijin","title":"Darl'n Snowflake","aptitude":{"turf":"A","dirt":"B","short":"D","mile":"A","medium":"A","long":"E"}},
 {"id":102902,"name":"Yukino Bijin","title":"Snowy Girl of Tea and Cake","aptitude":{"turf":"A","dirt":"A","short":"D","mile":"A","medium":"A","long":"E"},"jp_only":true},
+{"id":102903,"name":"Yukino Bijin","title":"","aptitude":{"turf":"A","dirt":"B","short":"D","mile":"A","medium":"A","long":"E"},"jp_only":true},
 {"id":104701,"name":"Zenno Rob Roy","title":"Heroic Author","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"E","medium":"A","long":"A"}},
 {"id":104702,"name":"Zenno Rob Roy","title":"Inlaid Stories","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"E","medium":"A","long":"A"},"jp_only":true}
 ]
