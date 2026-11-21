@@ -6,7 +6,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win"
+    "dist": "electron-builder --win --publish never"
   },
   "devDependencies": {
     "electron": "^33.2.0",
@@ -15,8 +15,25 @@
   "build": {
     "appId": "local.discord.soundboard",
     "productName": "Soundboard",
-    "files": ["main.js", "preload.js", "index.html", "default-sounds.js", "package.json"],
-    "directories": { "output": "dist" },
-    "win": { "target": ["portable", "nsis"], "artifactName": "Soundboard-${version}-${target}.${ext}" }
-  }
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "default-sounds.js",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "Soundboard.${ext}"
+    },
+    "portable": {
+      "artifactName": "Soundboard.${ext}"
+    }
+  },
+  "author": "Soundboard"
 }
