@@ -19,13 +19,21 @@ jobs:
       - run: npm run dist
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Zip the full app folder
+        run: Compress-Archive -Path dist/win-unpacked/* -DestinationPath dist/Soundboard-Folder.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Soundboard-windows
-          path: soundboard/dist/Soundboard.exe
+          path: |
+            soundboard/dist/Soundboard-Setup.exe
+            soundboard/dist/Soundboard-Portable.exe
+            soundboard/dist/Soundboard-Folder.zip
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: soundboard-build-${{ github.run_number }}
           name: Soundboard app (build ${{ github.run_number }})
           target_commitish: ${{ github.sha }}
-          files: soundboard/dist/Soundboard.exe
+          files: |
+            soundboard/dist/Soundboard-Setup.exe
+            soundboard/dist/Soundboard-Portable.exe
+            soundboard/dist/Soundboard-Folder.zip

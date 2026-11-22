@@ -27,12 +27,19 @@
     },
     "win": {
       "target": [
+        "nsis",
         "portable"
-      ],
-      "artifactName": "Soundboard.${ext}"
+      ]
     },
     "portable": {
-      "artifactName": "Soundboard.${ext}"
+      "artifactName": "Soundboard-Portable.${ext}"
+    },
+    "nsis": {
+      "artifactName": "Soundboard-Setup.${ext}",
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "runAfterFinish": true
     }
   },
   "author": "Soundboard"
