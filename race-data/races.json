@@ -1,5 +1,5 @@
 {
-"generated":"2026-11-16T05:58:47Z",
+"generated":"2026-11-23T05:49:18Z",
 "source":"GameTora (gametora.com), from the game's master data",
 "debut_fans":0,
 "races":[
@@ -456,6 +456,7 @@
 {"id":100903,"name":"Daiwa Scarlet","title":"","aptitude":{"turf":"A","dirt":"G","short":"F","mile":"B","medium":"A","long":"A"},"jp_only":true},
 {"id":109201,"name":"Dantsu Flame","title":"Center ◎ Spotlight","aptitude":{"turf":"A","dirt":"F","short":"E","mile":"B","medium":"A","long":"D"},"jp_only":true},
 {"id":111201,"name":"Daring Heart","title":"Daring Darling!","aptitude":{"turf":"A","dirt":"D","short":"B","mile":"A","medium":"E","long":"G"},"jp_only":true},
+{"id":107501,"name":"Daring Tact","title":"","aptitude":{"turf":"A","dirt":"G","short":"F","mile":"A","medium":"A","long":"F"},"jp_only":true},
 {"id":111901,"name":"Dream Journey","title":"Dreamland Memento","aptitude":{"turf":"A","dirt":"G","short":"F","mile":"C","medium":"A","long":"A"},"jp_only":true},
 {"id":111902,"name":"Dream Journey","title":"Snow-White Dream Road","aptitude":{"turf":"A","dirt":"G","short":"F","mile":"C","medium":"A","long":"A"},"jp_only":true},
 {"id":110801,"name":"Duramente","title":"Red in Black","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"A","medium":"A","long":"C"},"jp_only":true},
@@ -614,7 +615,7 @@
 {"id":102001,"name":"Seiun Sky","title":"Reeling in the Big One","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"C","medium":"A","long":"A"}},
 {"id":102002,"name":"Seiun Sky","title":"Soirée des Chatons","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"C","medium":"A","long":"A"}},
 {"id":102003,"name":"Seiun Sky","title":"Shoreline Whimsy in Orange","aptitude":{"turf":"A","dirt":"G","short":"G","mile":"C","medium":"A","long":"A"},"jp_only":true},
-{"id":104301,"name":"Shinko Windy","title":"Wicked Punk","aptitude":{"turf":"F","dirt":"A","short":"C","mile":"A","medium":"B","long":"G"},"jp_only":true},
+{"id":104301,"name":"Shinko Windy","title":"Wicked Punk","aptitude":{"turf":"F","dirt":"A","short":"C","mile":"A","medium":"B","long":"G"}},
 {"id":104302,"name":"Shinko Windy","title":"Chomp-Chomp ☆ Scamp","aptitude":{"turf":"F","dirt":"A","short":"C","mile":"A","medium":"B","long":"G"},"jp_only":true},
 {"id":100201,"name":"Silence Suzuka","title":"Innocent Silence","aptitude":{"turf":"A","dirt":"G","short":"D","mile":"A","medium":"A","long":"E"}},
 {"id":100202,"name":"Silence Suzuka","title":"Emerald Tidings","aptitude":{"turf":"A","dirt":"G","short":"D","mile":"A","medium":"A","long":"E"},"jp_only":true},
