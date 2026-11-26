@@ -5,7 +5,7 @@ import { beforeEach, test } from "node:test";
 import worker, {
   buildDeck, buildEmbed, clearCardCache, clubSummary, countdownMessage, deckEmbed, describeMonthly, describeSchedule, formatFans, isSafe, localNow,
   makeCardsToken, monthlyDue, parseFans, parseLiveBoard, parseTime, pickImage, postTimes, prettyCharacter, readCardsToken,
-  clearRaceCache, findUma, memberComparison, MOODS, pickGif, planRaces, REACTION_GIFS, runSchedule, umaChoices,
+  clearRaceCache, findUma, guessClue, guessRoster, memberComparison, MOODS, pickGif, planRaces, REACTION_GIFS, runSchedule, umaChoices,
 } from "./worker.js";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
@@ -95,7 +95,7 @@ test("answers Discord's ping and registers /uma", async () => {
   assert.deepEqual(commands.map((c) => c.name), [
     "uma", "uma_here", "uma_every", "uma_time", "uma_off", "uma_status", "uma_say", "uma_monthly", "uma_monthly_off",
     "uma_cards", "uma_deck", "uma_races", "uma_import", "uma_test", "uma_fans", "uma_quota", "uma_summary",
-    "uma_react",
+    "uma_guess", "uma_answer", "uma_react",
   ]);
   assert.equal(commands.find((c) => c.name === "uma_import").default_member_permissions, "32");
   assert.equal(commands.find((c) => c.name === "uma_test").default_member_permissions, "32");
@@ -231,6 +231,10 @@ function fakeKV(initial = {}) {
     async put(key, value, options = {}) {
       data.set(key, value);
       if (options.metadata) meta.set(key, options.metadata);
+    },
+    async delete(key) {
+      data.delete(key);
+      meta.delete(key);
     },
     async list({ prefix = "" } = {}) {
       const keys = [...data.keys()].filter((key) => key.startsWith(prefix)).sort();
@@ -1252,4 +1256,84 @@ test("the cheering gets louder as the month runs out", () => {
   };
   const stages = [10, 18, 25, 27, 29, 30].map(loudness);
   for (let i = 1; i < stages.length; i++) assert.ok(stages[i] > stages[i - 1], `stage ${i} should be louder: ${stages}`);
+});
+
+// ---- Uma guessing game ---------------------------------------------------------------
+
+const GUESS_DATA = {
+  debut_fans: 0,
+  races: [],
+  umas: [
+    { id: 100101, name: "Special Week", title: "Special Dreamer", aptitude: { turf: "A", dirt: "G", short: "F", mile: "C", medium: "A", long: "A" } },
+    { id: 100102, name: "Special Week", title: "Hopp'n Happy Heart", aptitude: { turf: "A", dirt: "G", short: "F", mile: "C", medium: "A", long: "A" } },
+    { id: 109901, name: "JP Girl", title: "Secret", aptitude: { turf: "A", dirt: "A", short: "A", mile: "A", medium: "A", long: "A" }, jp_only: true },
+  ],
+};
+
+test("guessing game characters and clues", () => {
+  const characters = guessRoster(GUESS_DATA);
+  assert.deepEqual(characters.map((c) => [c.name, c.titles]), [["Special Week", ["Special Dreamer", "Hopp'n Happy Heart"]]]); // no JP-only
+  const round = { ...characters[0], clues: 1 };
+  assert.match(guessClue(round, 1), /Turf \*\*A\*\* · Dirt \*\*G\*\* · Short \*\*F\*\*/);
+  assert.equal(guessClue(round, 2), "🔤 Her name has **11** letters and starts with **S**");
+  assert.equal(guessClue(round, 3), "👗 One of her outfits is called **[Special Dreamer]**");
+  assert.equal(guessClue(round, 4), "🧩 Her name looks like this: `S______ W___`");
+  assert.equal(guessClue(round, 5), "💡 Last clue: `S_e_i_l W_e_`");
+});
+
+test("a guessing round: clues, wrong guesses, the winner gets points, and scores", async () => {
+  clearRaceCache();
+  routes["raw.githubusercontent.com"] = (url) => (url.endsWith("/race-data/races.json") ? Response.json(GUESS_DATA) : new Response("", { status: 404 }));
+  routes["umapyoi.net"] = () => Response.json([{ name_en: "Special Week", thumb_img: "https://images.example/spe.png" }]);
+  const kv = fakeKV();
+  const env = { ...ENV, UMA_STATE: kv };
+  const step = async (name, options = []) => {
+    calls = [];
+    const response = await run(await signedRequest({ ...asUser(name, options), member: { user: { id: "123456789", username: "jedrek" } } }), env);
+    assert.deepEqual(await response.json(), { type: 5 });
+    return JSON.parse(editCalls()[0].init.body);
+  };
+
+  const started = await step("uma_guess");
+  assert.equal(started.embeds[0].title, "🤔 Who's that Uma?");
+  assert.match(started.embeds[0].description, /Turf \*\*A\*\*[\s\S]*\(1\/5\)/);
+  assert.equal(kv.json("guess:777:555").name, "Special Week");
+  assert.match((await step("uma_guess")).embeds[0].title, /still going/); // a second /uma_guess shows the same round
+
+  const wrong = await step("uma_answer", [{ name: "name", value: "Gold Ship" }]);
+  assert.equal(wrong.embeds[0].title, "❌ Not Gold Ship! Here's another clue…");
+  assert.match(wrong.embeds[0].description, /11\*\* letters and starts with \*\*S\*\*[\s\S]*\(2\/5\)/);
+
+  const right = await step("uma_answer", [{ name: "name", value: "special week" }]);
+  assert.equal(right.embeds[0].title, "It was Special Week! 🎉");
+  assert.match(right.embeds[0].description, /<@123456789> got it with 2 clues! \*\*\+4 points\*\* \(4 total\)/);
+  assert.equal(right.embeds[0].thumbnail.url, "https://images.example/spe.png");
+  assert.deepEqual(right.allowed_mentions, { parse: [] });
+  assert.equal(kv.json("guess:777:555"), null);
+  assert.deepEqual(kv.json("guessscores:777")["123456789"], { points: 4, wins: 1, name: "jedrek" });
+
+  const none = await step("uma_answer", [{ name: "name", value: "Special Week" }]);
+  assert.match(none.content, /no round going/);
+  const scores = await step("uma_guess", [{ name: "action", value: "scores" }]);
+  assert.match(scores.embeds[0].description, /1\. <@123456789> \*\*4\*\* points \(1 win\)/);
+
+  await step("uma_guess");
+  const gaveUp = await step("uma_guess", [{ name: "action", value: "give_up" }]);
+  assert.match(gaveUp.embeds[0].description, /Nobody got her this time/);
+
+  const typing = { ...asUser("uma_answer", [{ name: "name", value: "spe", focused: true }]), type: 4 };
+  assert.deepEqual(await (await run(await signedRequest(typing), env)).json(), { type: 8, data: { choices: [{ name: "Special Week", value: "Special Week" }] } });
+});
+
+test("after the last clue a wrong guess ends the round", async () => {
+  clearRaceCache();
+  routes["raw.githubusercontent.com"] = () => Response.json(GUESS_DATA);
+  routes["umapyoi.net"] = () => new Response("down", { status: 503 });
+  const round = { name: "Special Week", titles: [], aptitude: GUESS_DATA.umas[0].aptitude, clues: 5, wrong: [] };
+  const kv = fakeKV({ "guess:777:555": round });
+  await run(await signedRequest(asUser("uma_answer", [{ name: "name", value: "Oguri Cap" }])), { ...ENV, UMA_STATE: kv });
+  const body = JSON.parse(editCalls()[0].init.body);
+  assert.match(body.embeds[0].description, /Not Oguri Cap, and that was the last clue!/);
+  assert.equal(body.embeds[0].thumbnail, undefined); // no picture when umapyoi is down
+  assert.equal(kv.json("guess:777:555"), null);
 });

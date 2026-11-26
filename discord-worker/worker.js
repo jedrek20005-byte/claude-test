@@ -240,6 +240,23 @@ const COMMANDS = [
     ],
   },
   {
+    name: "uma_guess",
+    description: "Play Who's that Uma? Belno gives clues, everyone guesses",
+    type: 1,
+    contexts: [0],
+    options: [{
+      type: 3, name: "action", description: "Start a round (or show the current one), give up, or see the scores", required: false,
+      choices: [{ name: "Start / show round", value: "start" }, { name: "Give up (reveal her)", value: "give_up" }, { name: "Scores", value: "scores" }],
+    }],
+  },
+  {
+    name: "uma_answer",
+    description: "Guess the mystery Uma in this channel's round",
+    type: 1,
+    contexts: [0],
+    options: [{ type: 3, name: "name", description: "Her name (start typing)", required: true, autocomplete: true, max_length: 100 }],
+  },
+  {
     name: "uma_react",
     description: "Post a Belno reaction GIF",
     type: 1,
@@ -612,6 +629,16 @@ const COMMAND_HANDLERS = {
         }],
       },
     });
+  },
+
+  uma_guess(interaction, env, ctx) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    return guessReply(ctx, interaction, env, guessStart);
+  },
+
+  uma_answer(interaction, env, ctx) {
+    if (!env.UMA_STATE) return reply(NO_STORAGE, { ephemeral: true });
+    return guessReply(ctx, interaction, env, guessAnswer);
   },
 
   uma_races(interaction, env, ctx) {
@@ -1572,9 +1599,163 @@ async function answerRaces(interaction, env) {
   }
 }
 
+// ---- Uma guessing game (/uma_guess, /uma_answer) ---------------------------------
+
+// Belno describes a mystery Uma with clues; every wrong guess unlocks the next
+// one. The first right answer wins points: 5 on the first clue, down to 1.
+const GUESS_CLUES = 5;
+const UMAPYOI_CHARACTERS = "https://umapyoi.net/api/v1/character/list";
+const guessKey = (guildId, channelId) => `guess:${guildId}:${channelId}`;
+const scoresKey = (guildId) => `guessscores:${guildId}`;
+const normalName = (name) => String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+// One entry per character (global ones only, so everyone can know her), with
+// her outfit titles and the first outfit's aptitudes.
+export function guessRoster(data) {
+  const byName = new Map();
+  for (const uma of data.umas) {
+    if (uma.jp_only) continue;
+    const entry = byName.get(uma.name) ?? { name: uma.name, titles: [], aptitude: uma.aptitude };
+    if (uma.title) entry.titles.push(uma.title);
+    byName.set(uma.name, entry);
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function guessClue(round, n) {
+  const a = round.aptitude;
+  const name = round.name;
+  switch (n) {
+    case 1:
+      return `🏟️ Her best ground and distances: Turf **${a.turf}** · Dirt **${a.dirt}** · Short **${a.short}** · Mile **${a.mile}** · Medium **${a.medium}** · Long **${a.long}**`;
+    case 2:
+      return `🔤 Her name has **${name.replace(/[^A-Za-z]/g, "").length}** letters and starts with **${name[0]}**`;
+    case 3:
+      return round.titles.length ? `👗 One of her outfits is called **[${round.titles[0]}]**` : `🔡 Her name ends with **${name.slice(-1)}**`;
+    case 4:
+      return `🧩 Her name looks like this: \`${name.replace(/[A-Za-z]/g, (ch, i) => (i === 0 || name[i - 1] === " " ? ch : "_"))}\``;
+    default:
+      return `💡 Last clue: \`${name.replace(/[A-Za-z]/g, (ch, i) => (i % 2 === 0 || name[i - 1] === " " ? ch : "_"))}\``;
+  }
+}
+
+function guessEmbed(round, title) {
+  const clues = Array.from({ length: round.clues }, (_, i) => guessClue(round, i + 1));
+  return {
+    title,
+    description: `${clues.join("\n")}\n\nGuess with \`/uma_answer\`! Each wrong guess gives a new clue (${round.clues}/${GUESS_CLUES}).`,
+    color: EMBED_COLOR,
+  };
+}
+
+// Her picture from umapyoi.net, when it answers.
+async function characterPicture(name) {
+  try {
+    const list = await getJson(UMAPYOI_CHARACTERS);
+    return list.find((c) => normalName(c.name_en) === normalName(name))?.thumb_img ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function revealEmbed(round, text) {
+  const embed = {
+    title: `It was ${round.name}! 🎉`,
+    description: text + (round.titles.length ? `\n👗 Outfits: ${round.titles.map((t) => `[${t}]`).join(", ")}` : ""),
+    color: EMBED_COLOR,
+  };
+  const picture = await characterPicture(round.name);
+  if (picture) embed.thumbnail = { url: picture };
+  return embed;
+}
+
+async function guessStart(interaction, env) {
+  const options = optionValues(interaction);
+  const key = guessKey(interaction.guild_id, interaction.channel_id);
+  const round = await env.UMA_STATE.get(key, "json");
+  if (options.action === "scores") return { embeds: [await scoresEmbed(env, interaction.guild_id)] };
+  if (options.action === "give_up") {
+    if (!round) return { content: "There's no round going in this channel. Start one with `/uma_guess`!" };
+    await env.UMA_STATE.delete(key);
+    return { embeds: [await revealEmbed(round, "Nobody got her this time. Next one will be yours! 💚")] };
+  }
+  if (round) return { embeds: [guessEmbed(round, "🤔 Who's that Uma? (still going)")] };
+  const characters = guessRoster(await loadRaces(env));
+  const pick = characters[Math.floor(Math.random() * characters.length)];
+  const fresh = { name: pick.name, titles: pick.titles.slice(0, 4), aptitude: pick.aptitude, clues: 1, wrong: [], startedAt: Date.now() };
+  await env.UMA_STATE.put(key, JSON.stringify(fresh), { expirationTtl: 7 * 24 * 60 * 60 });
+  return { embeds: [guessEmbed(fresh, "🤔 Who's that Uma?")] };
+}
+
+async function guessAnswer(interaction, env) {
+  const key = guessKey(interaction.guild_id, interaction.channel_id);
+  const round = await env.UMA_STATE.get(key, "json");
+  if (!round) return { content: "There's no round going in this channel. Start one with `/uma_guess`!" };
+  const guess = String(optionValues(interaction).name || "").trim();
+  const user = userOf(interaction);
+  if (normalName(guess) === normalName(round.name)) {
+    await env.UMA_STATE.delete(key);
+    const points = Math.max(1, GUESS_CLUES + 1 - round.clues);
+    const scores = (await env.UMA_STATE.get(scoresKey(interaction.guild_id), "json")) ?? {};
+    const mine = scores[user.id] ?? { points: 0, wins: 0 };
+    scores[user.id] = { points: mine.points + points, wins: mine.wins + 1, name: (user.global_name || user.username || "Trainer").slice(0, 64) };
+    await env.UMA_STATE.put(scoresKey(interaction.guild_id), JSON.stringify(scores));
+    return {
+      embeds: [await revealEmbed(round, `<@${user.id}> got it with ${round.clues} clue${round.clues === 1 ? "" : "s"}! **+${points} point${points === 1 ? "" : "s"}** (${scores[user.id].points} total) 🏆`)],
+    };
+  }
+  if (round.clues >= GUESS_CLUES) {
+    await env.UMA_STATE.delete(key);
+    return { embeds: [await revealEmbed(round, `Not ${escapeMarkdown(guess)}, and that was the last clue! Better luck next time 💚`)] };
+  }
+  const next = { ...round, clues: round.clues + 1, wrong: [...round.wrong, guess].slice(-10) };
+  await env.UMA_STATE.put(key, JSON.stringify(next), { expirationTtl: 7 * 24 * 60 * 60 });
+  return {
+    embeds: [guessEmbed(next, `❌ Not ${guess.slice(0, 80)}! Here's another clue…`)],
+  };
+}
+
+async function scoresEmbed(env, guildId) {
+  const scores = Object.entries((await env.UMA_STATE.get(scoresKey(guildId), "json")) ?? {})
+    .sort((a, b) => b[1].points - a[1].points).slice(0, 15);
+  return {
+    title: "🏆 Uma guessing scores",
+    description: scores.length
+      ? scores.map(([id, s], i) => `${i + 1}. <@${id}> **${s.points}** points (${s.wins} win${s.wins === 1 ? "" : "s"})`).join("\n")
+      : "No points yet! Start a round with `/uma_guess` 💚",
+    color: EMBED_COLOR,
+  };
+}
+
+// Runs a game step after a quick "thinking…", then shows the result to everyone.
+function guessReply(ctx, interaction, env, step) {
+  const editUrl = `${API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+  ctx.waitUntil((async () => {
+    let message;
+    try {
+      message = await step(interaction, env);
+    } catch (err) {
+      console.error(err);
+      message = { content: "Something went wrong, sorry." };
+    }
+    await sendToDiscord(editUrl, "PATCH", {}, { allowed_mentions: { parse: [] }, ...message }).catch(() => {});
+  })());
+  return jsonResponse({ type: 5 });
+}
+
 async function autocomplete(interaction, env) {
   const focused = (interaction.data.options || []).find((option) => option.focused);
   let choices = [];
+  if (interaction.data.name === "uma_answer" && focused?.name === "name") {
+    try {
+      const typed = normalName(focused.value);
+      choices = guessRoster(await loadRaces(env))
+        .filter((c) => normalName(c.name).includes(typed)).slice(0, 25)
+        .map((c) => ({ name: c.name, value: c.name }));
+    } catch (err) {
+      console.error(err);
+    }
+  }
   if (interaction.data.name === "uma_races" && focused?.name === "uma") {
     try {
       choices = umaChoices(await loadRaces(env), focused.value);
